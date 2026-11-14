@@ -1,360 +1,303 @@
-import os
-import logging
-from datetime import datetime, time
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters, JobQueue
-)
-from telegram.constants import ParseMode
+import os, threading, asyncio, datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ===== RENDER FREE FIX - KEEP THIS AT TOP =====
+def keep_alive():
+    port = int(os.environ.get("PORT", 10000))
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
+        def log_message(self, *a): pass
+    HTTPServer(("0.0.0.0", port), H).serve_forever()
+threading.Thread(target=keep_alive, daemon=True).start()
+# ===============================================
 
-# ===== CONFIG - YOUR REAL BOT =====
-BOT_USERNAME = "Dubairentalsbot"
-BOT_LINK = f"https://t.me/{BOT_USERNAME}"
-CHANNEL_USERNAME = "dubairentonly"
-CHANNEL_LINK = f"https://t.me/{CHANNEL_USERNAME}"
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1004386364968"))
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # your Telegram ID
-BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_TOKEN_HERE")
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters, ConversationHandler
 
-# In-memory DB - replace with SQLite/Postgres later if you want persistence
-users = {}  # user_id -> {role, phone, trakheesi, verified, step, draft, ...}
-listings = {}  # listing_id -> data
-leads = {}  # lead_id -> data
-next_id = [1]
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHANNEL_ID = -1004386364968
+CHANNEL_LINK = "https://t.me/dubairentonly"
+BOT_LINK = "https://t.me/Dubairentalsbot"
 
-def get_user(uid):
-    if uid not in users:
-        users[uid] = {"role": None, "phone": None, "trakheesi": None,
-                       "verified": False, "step": None, "draft": {}, "last_listing": None}
-    return users[uid]
+# States
+ROLE, PHONE, T_LOCATION, T_TYPE, T_BUDGET, T_PHOTOS, T_DESC, T_CONTACT, T_CONFIRM, AGENT_BROWSE = range(10)
 
-def main_menu_kb(uid=None):
+# In-memory DB - replace with real DB later if you want
+users = {}  # user_id -> {role, phone, verified:bool}
+listings = []  # list of dicts
+drafts = {}  # user_id -> draft
+
+def main_menu_kb(is_verified=False):
     kb = [
-        [InlineKeyboardButton("🏠 Post a Listing (Agent)", callback_data="role_agent")],
-        [InlineKeyboardButton("🔍 Find a Property (Tenant)", callback_data="role_tenant")],
+        [InlineKeyboardButton("🏠 I'm a Tenant - Post a Rental", callback_data="role_tenant")],
+        [InlineKeyboardButton("🕵️ I'm an Agent - Find Tenants", callback_data="role_agent")],
         [InlineKeyboardButton("📢 View Channel", url=CHANNEL_LINK)],
         [InlineKeyboardButton("❓ Help", callback_data="help")],
-        [InlineKeyboardButton("🔄 Restart / Main Menu", callback_data="restart")],
     ]
+    if is_verified:
+        kb.append([InlineKeyboardButton("🔄 Restart / Main Menu", callback_data="restart")])
     return InlineKeyboardMarkup(kb)
 
-def restart_kb(is_agent=True):
-    # Smart restart - keeps verification
-    if is_agent:
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Post Another Listing", callback_data="restart_agent")],
-            [InlineKeyboardButton("🏠 Main Menu", callback_data="restart")],
-            [InlineKeyboardButton("📢 View Channel", url=CHANNEL_LINK)],
-        ])
-    else:
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 New Request", callback_data="restart_tenant")],
-            [InlineKeyboardButton("🏠 Main Menu", callback_data="restart")],
-            [InlineKeyboardButton("📢 View Channel", url=CHANNEL_LINK)],
-        ])
+def restart_kb():
+    # Smart Restart: shown AFTER any finish. Keeps verification.
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Post Another", callback_data="post_another")],
+        [InlineKeyboardButton("🔄 Main Menu", callback_data="restart")],
+        [InlineKeyboardButton("📢 View Channel", url=CHANNEL_LINK)],
+        [InlineKeyboardButton("❓ Help", callback_data="help")],
+    ])
+
+def agent_after_buy_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛒 Buy Another Contact", callback_data="buy_another")],
+        [InlineKeyboardButton("🔄 Main Menu", callback_data="restart")],
+        [InlineKeyboardButton("📢 View Channel", url=CHANNEL_LINK)],
+    ])
 
 def help_text():
     return (
-        "❓ <b>How @Dubairentalsbot Works</b>\n\n"
-        "<b>For Agents:</b>\n"
-        "1. Tap Post a Listing\n"
-        "2. Send details (area, price, beds, etc)\n"
-        "3. Send photos (up to 5)\n"
-        "4. Type DONE\n"
-        "5. Send phone + Trakheesi LAST\n"
-        "6. We verify once, then post to @dubairentonly\n\n"
-        "<b>For Tenants:</b>\n"
-        "1. Tap Find a Property\n"
-        "2. Send what you want (area, budget, beds, move date)\n"
-        "3. Send phone LAST\n"
-        "4. Agents see it and pay to unlock your contact\n\n"
-        "Commands: /start /help /menu\n"
-        "Stuck? Tap 🔄 Restart / Main Menu - your verification is saved."
+        "❓ *HELP - Dubai Rentals*\n\n"
+        "🏠 *Tenant:* Post your rental need. We ask for Location, Type, Budget, Photos, Description, and *Contact LAST* so you don't lose your progress.\n\n"
+        "🕵️ *Agent:* Browse tenants, pay to unlock contact, then contact them directly.\n\n"
+        "✅ *Verification:* You verify phone ONCE. Restart will NOT ask again.\n\n"
+        "🔄 *Restart:* Anytime you finish posting or buying, tap Restart / Post Another to start again without re-verifying.\n\n"
+        "📢 Channel: @dubairentonly\n"
+        "Need human help? Reply here."
     )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    u = get_user(uid)
-    u["step"] = None
-    # Don't clear verified/phone - smart restart
+    u = users.get(uid, {})
+    # Smart restart: if verified, skip role/phone and go to menu
     await update.message.reply_text(
-        f"👋 Welcome to <b>@Dubairentalsbot</b> - Dubai Rentals Only\n\n"
-        "Agents post verified listings. Tenants find homes.\n"
-        "Choose what you want to do:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_menu_kb(uid)
+        "👋 *Welcome to Dubai Rentals!*\n\nFind tenants / Find rentals fast.\n\nChoose who you are:",
+        reply_markup=main_menu_kb(is_verified=u.get("verified", False)),
+        parse_mode="Markdown"
     )
+    return ROLE
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="restart")]])
-    if update.message:
-        await update.message.reply_text(help_text(), parse_mode=ParseMode.HTML, reply_markup=kb)
-    else:
-        await update.callback_query.edit_message_text(help_text(), parse_mode=ParseMode.HTML, reply_markup=kb)
-
-# ===== CALLBACKS =====
-async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def restart_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    u = get_user(uid)
-    data = q.data
+    # IMPROVED RESTART: Clear draft only, KEEP role/phone/verified
+    drafts.pop(uid, None)
+    context.user_data.clear()
+    u = users.get(uid, {})
+    await q.edit_message_text(
+        "🔄 *Restarted.*\nYour verification is saved, no need to verify again.\n\nWhat do you want to do?",
+        reply_markup=main_menu_kb(is_verified=u.get("verified", False)),
+        parse_mode="Markdown"
+    )
+    return ROLE
 
-    if data == "restart":
-        u["step"] = None
-        u["draft"] = {}
-        await q.edit_message_text("🏠 <b>Main Menu</b>\nYour verification & phone are saved. Choose again:", parse_mode=ParseMode.HTML, reply_markup=main_menu_kb(uid))
-        return
+async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text(help_text(), reply_markup=restart_kb(), parse_mode="Markdown")
+    return ROLE
 
-    if data == "restart_agent":
-        u["step"] = "agent_details"
-        u["draft"] = {}
-        await q.edit_message_text("🔄 <b>New Listing - Step 1/4</b>\n\nSend listing details:\nExample: Marina, 2BR, 95k/year, Furnished, Available now", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="restart")]]))
-        return
-
-    if data == "restart_tenant":
-        u["step"] = "tenant_details"
-        u["draft"] = {}
-        await q.edit_message_text("🔄 <b>New Request - Step 1/2</b>\n\nWhat are you looking for?\nExample: JVC, 1BR, budget 55k, move in Dec", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="restart")]]))
-        return
-
-    if data == "help":
-        await q.edit_message_text(help_text(), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="restart")]]))
-        return
-
-    if data == "role_agent":
-        u["role"] = "agent"
-        # If already verified, skip straight to details - verification ONCE
-        if u["verified"] and u["phone"] and u["trakheesi"]:
-            u["step"] = "agent_details"
-            u["draft"] = {}
-            await q.edit_message_text("✅ You're already verified!\n\n<b>Step 1/4 - Details</b>\nSend listing details:", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="restart")]]))
+async def role_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    role = "tenant" if q.data == "role_tenant" else "agent"
+    # If already verified, skip phone
+    if users.get(uid, {}).get("verified"):
+        users[uid]["role"] = role
+        if role == "tenant":
+            drafts[uid] = {}
+            await q.edit_message_text("🏠 *Tenant Post - Step 1/6*\n\nWhere is the property? (e.g. Marina, Downtown, JLT)", parse_mode="Markdown")
+            return T_LOCATION
         else:
-            u["step"] = "agent_details"
-            u["draft"] = {}
-            await q.edit_message_text("🏠 <b>Agent - Step 1/4: Details</b>\n\nSend listing details first.\nContacts (phone + Trakheesi) will be asked LAST.\n\nExample: Marina, 2BR, 95k/year", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="restart")]]))
-        return
+            return await show_listings(q, context)
+    # Not verified -> ask phone
+    users[uid] = {"role": role, "verified": False}
+    kb = ReplyKeyboardMarkup([[KeyboardButton("📱 Share My Phone", request_contact=True)]], one_time_keyboard=True, resize_keyboard=True)
+    await q.edit_message_text("📱 *One-time Verification*\n\nPlease share your phone to verify. You will only do this ONCE.", parse_mode="Markdown")
+    await q.message.reply_text("Tap the button below:", reply_markup=kb)
+    return PHONE
 
-    if data == "role_tenant":
-        u["role"] = "tenant"
-        u["step"] = "tenant_details"
-        u["draft"] = {}
-        await q.edit_message_text("🔍 <b>Tenant - Step 1/2: What do you need?</b>\n\nSend details:\nExample: JVC, 1BR, 55k budget, move Dec", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="restart")]]))
-        return
-
-    if data.startswith("buy_"):
-        lead_id = data.split("_", 1)[1]
-        lead = leads.get(lead_id)
-        if not lead:
-            await q.edit_message_text("This lead is gone.")
-            return
-        # Here connect your payment - for now simulate approve
-        await q.edit_message_text(
-            f"💳 To unlock this tenant contact, pay and send receipt to admin.\n\nTenant wants: {lead['details']}\n\nAfter payment you will get the number + 🔄 button to buy another.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ I Paid - Get Number", callback_data=f"paid_{lead_id}")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="restart")]
-            ])
-        )
-        return
-
-    if data.startswith("paid_"):
-        lead_id = data.split("_", 1)[1]
-        lead = leads.get(lead_id)
-        if not lead:
-            await q.edit_message_text("Lead not found.")
-            return
-        await q.edit_message_text(
-            f"✅ <b>Unlocked!</b>\nTenant Number: {lead['phone']}\nRequest: {lead['details']}\n\nCall fast - good leads go quick.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=restart_kb(is_agent=True)
-        )
-        return
-
-    if data.startswith("approve_"):
-        lid = data.split("_", 1)[1]
-        lst = listings.get(lid)
-        if not lst:
-            await q.edit_message_text("Listing not found.")
-            return
-        # Post to channel with SHARE + OPEN BOT buttons
-        share_url = f"https://t.me/share/url?url={CHANNEL_LINK}&text={lst['details'][:80]}"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📤 Share This Listing", url=share_url)],
-            [InlineKeyboardButton("🤖 Open Bot to Enquire", url=BOT_LINK)],
-            [InlineKeyboardButton("📢 View Channel", url=CHANNEL_LINK)],
-        ])
-        caption = f"🏠 <b>NEW LISTING - Dubai</b>\n\n{lst['details']}\n\n📍 Agent Verified ✅\nTrakheesi: {lst['trakheesi']}\n\n👉 Enquire via @{BOT_USERNAME}"
-        try:
-            if lst.get("photos"):
-                media = [InputMediaPhoto(p, caption=caption if i==0 else "", parse_mode=ParseMode.HTML) for i,p in enumerate(lst["photos"])]
-                await context.bot.send_media_group(CHANNEL_ID, media)
-                await context.bot.send_message(CHANNEL_ID, "👆 Tap Share or Open Bot above to enquire", reply_markup=kb)
-            else:
-                await context.bot.send_message(CHANNEL_ID, caption, parse_mode=ParseMode.HTML, reply_markup=kb)
-            lst["posted"] = True
-            await q.edit_message_text("✅ Posted to @dubairentonly!", reply_markup=restart_kb(is_agent=True))
-        except Exception as e:
-            await q.edit_message_text(f"Post failed: {e}\nCheck CHANNEL_ID and that bot is admin in channel.")
-        return
-
-# ===== MESSAGES - ORDER IS CONTACTS LAST =====
-async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def phone_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    u = get_user(uid)
-    text = (update.message.text or "").strip()
-    step = u.get("step")
-
-    if text.lower() in ["/start", "/menu"]:
-        await start(update, context)
-        return
-    if text.lower() == "/help":
-        await help_cmd(update, context)
-        return
-
-    if not step:
-        await update.message.reply_text("Tap a button to start:", reply_markup=main_menu_kb(uid))
-        return
-
-    # --- AGENT FLOW: details -> photos -> phone -> trakheesi (LAST) ---
-    if step == "agent_details":
-        u["draft"]["details"] = text
-        u["draft"]["photos"] = []
-        u["step"] = "agent_photos"
-        await update.message.reply_text("📸 <b>Step 2/4 - Photos</b>\nSend up to 5 photos, then type DONE\nType SKIP if no photos.", parse_mode=ParseMode.HTML)
-        return
-
-    if step == "agent_photos":
-        if text.upper() == "DONE":
-            # If already verified, we already have phone/trakheesi - post directly
-            if u["verified"]:
-                await finish_agent_listing(update, context, uid)
-            else:
-                u["step"] = "agent_phone"
-                await update.message.reply_text("📞 <b>Step 3/4 - Phone LAST</b>\nSend your phone number (e.g. +971501234567)")
-            return
-        if text.upper() == "SKIP":
-            u["draft"]["photos"] = []
-            if u["verified"]:
-                await finish_agent_listing(update, context, uid)
-            else:
-                u["step"] = "agent_phone"
-                await update.message.reply_text("📞 <b>Step 3/4 - Phone LAST</b>\nSend your phone number")
-            return
-        await update.message.reply_text("Send photos, then type DONE")
-        return
-
-    if step == "agent_phone":
-        u["draft"]["phone"] = text
-        u["step"] = "agent_trakheesi"
-        await update.message.reply_text("📄 <b>Step 4/4 - Trakheesi LAST</b>\nSend your Trakheesi / Permit number")
-        return
-
-    if step == "agent_trakheesi":
-        u["draft"]["trakheesi"] = text
-        u["phone"] = u["draft"]["phone"]
-        u["trakheesi"] = text
-        u["verified"] = True  # Verified ONCE - never ask again
-        await finish_agent_listing(update, context, uid)
-        return
-
-    # --- TENANT FLOW: details -> phone LAST ---
-    if step == "tenant_details":
-        u["draft"]["details"] = text
-        u["step"] = "tenant_phone"
-        await update.message.reply_text("📞 <b>Step 2/2 - Phone LAST</b>\nSend your phone number so agents can reach you after they pay")
-        return
-
-    if step == "tenant_phone":
-        u["draft"]["phone"] = text
-        u["phone"] = text
-        lid = f"L{next_id[0]}"; next_id[0]+=1
-        leads[lid] = {"details": u["draft"]["details"], "phone": text, "tenant_id": uid}
-        u["step"] = None
-        u["draft"] = {}
-        await update.message.reply_text(
-            f"✅ Request saved!\n\nAgents will see it and can unlock your contact.\n\nYour request: {leads[lid]['details']}",
-            reply_markup=restart_kb(is_agent=False)
-        )
-        # Notify admin / agents group - in real version send to agents
-        if ADMIN_ID:
-            try:
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("💳 Buy Contact", callback_data=f"buy_{lid}")]])
-                await context.bot.send_message(ADMIN_ID, f"🔔 NEW LEAD {lid}\n{leads[lid]['details']}\nTenant ID: {uid}", reply_markup=kb)
-            except: pass
-        return
-
-async def finish_agent_listing(update, context, uid):
-    u = get_user(uid)
-    lid = f"A{next_id[0]}"; next_id[0]+=1
-    listings[lid] = {
-        "details": u["draft"].get("details",""),
-        "photos": u["draft"].get("photos",[]),
-        "phone": u.get("phone"),
-        "trakheesi": u.get("trakheesi"),
-        "agent_id": uid,
-        "posted": False
-    }
-    u["last_listing"] = lid
-    u["step"] = None
-    u["draft"] = {}
-    # If admin is 0, auto-approve for testing, else ask admin
-    if ADMIN_ID == 0:
-        # Direct post path for testing
-        await update.message.reply_text("✅ Verified once! Listing saved. It will be posted to channel.", reply_markup=restart_kb(is_agent=True))
-        # Trigger approve logic manually via fake callback - simplified: post now
-        # In production set ADMIN_ID
+    contact = update.message.contact
+    if not contact:
+        await update.message.reply_text("Please tap Share My Phone button.")
+        return PHONE
+    users[uid]["phone"] = contact.phone_number
+    users[uid]["verified"] = True
+    await update.message.reply_text("✅ Verified! You won't need to do this again.", reply_markup=ReplyKeyboardRemove())
+    if users[uid]["role"] == "tenant":
+        drafts[uid] = {}
+        await update.message.reply_text("🏠 *Tenant Post - Step 1/6*\n\nWhere is the property?", parse_mode="Markdown")
+        return T_LOCATION
     else:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Approve & Post to Channel", callback_data=f"approve_{lid}")]])
-        try:
-            await context.bot.send_message(ADMIN_ID, f"🔔 NEW LISTING {lid}\n{listings[lid]['details']}\nPhone: {listings[lid]['phone']}\nTrakheesi: {listings[lid]['trakheesi']}", reply_markup=kb)
-        except: pass
-        await update.message.reply_text("✅ Listing received! Admin will verify & post to @dubairentonly.\nYou won't need to verify again.", reply_markup=restart_kb(is_agent=True))
+        # Agent flow needs a message to show listings
+        await update.message.reply_text("🕵️ Here are tenants:", reply_markup=main_menu_kb(True))
+        return AGENT_BROWSE
 
-async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---- TENANT FLOW - CONTACTS LAST ----
+async def t_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    drafts[update.effective_user.id]["location"] = update.message.text
+    await update.message.reply_text("Step 2/6: Property Type? (Studio, 1BR, 2BR, Villa)")
+    return T_TYPE
+
+async def t_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    drafts[update.effective_user.id]["type"] = update.message.text
+    await update.message.reply_text("Step 3/6: Budget? (e.g. 5000 AED/month)")
+    return T_BUDGET
+
+async def t_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    drafts[update.effective_user.id]["budget"] = update.message.text
+    await update.message.reply_text("Step 4/6: Send photos (or type 'skip')")
+    return T_PHOTOS
+
+async def t_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    u = get_user(uid)
-    if u.get("step") == "agent_photos":
-        fid = update.message.photo[-1].file_id
-        u["draft"].setdefault("photos", []).append(fid)
-        count = len(u["draft"]["photos"])
-        await update.message.reply_text(f"Photo {count}/5 saved. Send more or type DONE")
-    else:
-        await update.message.reply_text("Tap Post a Listing first.", reply_markup=main_menu_kb(uid))
+    if update.message.photo:
+        drafts[uid].setdefault("photos", []).append(update.message.photo[-1].file_id)
+        await update.message.reply_text("Photo saved. Send another or type 'done'")
+        return T_PHOTOS
+    if update.message.text and update.message.text.lower() in ["skip", "done"]:
+        await update.message.reply_text("Step 5/6: Short description?")
+        return T_DESC
+    await update.message.reply_text("Send photo or type 'done'")
+    return T_PHOTOS
 
-# ===== DAILY WELCOME POST - ONCE PER DAY =====
+async def t_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    drafts[update.effective_user.id]["desc"] = update.message.text
+    # CONTACTS LAST - Weakness fixed: if user quits earlier, we still have listing data
+    await update.message.reply_text("Step 6/6 - LAST STEP: Your contact? (WhatsApp / phone to show to agents)")
+    return T_CONTACT
+
+async def t_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    drafts[uid]["contact"] = update.message.text
+    d = drafts[uid]
+    preview = f"🏠 *PREVIEW*\n\n📍 {d.get('location')}\n🏡 {d.get('type')}\n💰 {d.get('budget')}\n📝 {d.get('desc')}\n📞 Contact: {d.get('contact')}\n\nPost this?"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes, Post", callback_data="confirm_post")],
+        [InlineKeyboardButton("🔄 Restart", callback_data="restart")],
+    ])
+    await update.message.reply_text(preview, reply_markup=kb, parse_mode="Markdown")
+    return T_CONFIRM
+
+async def confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    d = drafts.get(uid, {})
+    listing_id = len(listings)
+    d["id"] = listing_id
+    d["owner"] = uid
+    d["owner_phone"] = users.get(uid, {}).get("phone", "")
+    listings.append(d)
+
+    # Channel post with Share button
+    caption = f"🏠 *NEW RENTAL NEEDED*\n\n📍 Location: {d.get('location')}\n🏡 Type: {d.get('type')}\n💰 Budget: {d.get('budget')}\n📝 {d.get('desc')}\n\n👉 Agents: Open bot to unlock contact"
+    share_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🕵️ I'm an Agent - Get Contact", url=BOT_LINK)],
+        [InlineKeyboardButton("🔗 Share This Listing", switch_inline_query=f"Rental in {d.get('location')} - {d.get('budget')}")],
+        [InlineKeyboardButton("📢 View Channel", url=CHANNEL_LINK)],
+    ])
+    try:
+        if d.get("photos"):
+            await context.bot.send_photo(CHANNEL_ID, d["photos"][0], caption=caption, reply_markup=share_kb, parse_mode="Markdown")
+        else:
+            await context.bot.send_message(CHANNEL_ID, caption, reply_markup=share_kb, parse_mode="Markdown")
+    except Exception as e:
+        print("Channel post failed:", e)
+
+    await q.edit_message_text("✅ *Posted to @dubairentonly!*\n\nWant to post another?", reply_markup=restart_kb(), parse_mode="Markdown")
+    drafts.pop(uid, None)
+    return ROLE
+
+# ---- AGENT FLOW ----
+async def show_listings(q, context):
+    if not listings:
+        await q.edit_message_text("No listings yet. Check back soon.", reply_markup=restart_kb())
+        return AGENT_BROWSE
+    text = "🕵️ *Available Tenants:*\n\n"
+    kb = []
+    for l in listings[-10:]:
+        text += f"#{l['id']} - {l.get('location')} | {l.get('type')} | {l.get('budget')}\n"
+        kb.append([InlineKeyboardButton(f"💳 Buy Contact #{l['id']} - 20 AED", callback_data=f"buy_{l['id']}")])
+    kb.append([InlineKeyboardButton("🔄 Main Menu", callback_data="restart")])
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+    return AGENT_BROWSE
+
+async def buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    # In real version: check payment here. For now simulate paid.
+    lid = int(q.data.split("_")[1])
+    l = listings[lid]
+    # After payment, reveal contact
+    await q.edit_message_text(
+        f"✅ *Payment Confirmed!*\n\nContact for #{lid}:\n📞 {l.get('contact')}\nOwner Phone: {l.get('owner_phone')}\n\nGood luck!",
+        reply_markup=agent_after_buy_kb(),
+        parse_mode="Markdown"
+    )
+    return ROLE
+
+async def post_another(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    drafts[uid] = {}
+    await q.edit_message_text("🏠 *New Post - Step 1/6*\n\nWhere is the property?", parse_mode="Markdown")
+    return T_LOCATION
+
+async def buy_another(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    return await show_listings(q, context)
+
 async def daily_welcome(context: ContextTypes.DEFAULT_TYPE):
-    # Runs at 09:00 Dubai time
     try:
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Post a Listing", url=BOT_LINK)],
-            [InlineKeyboardButton("🔍 Find a Property", url=BOT_LINK)],
-            [InlineKeyboardButton("📤 Share Channel", url=f"https://t.me/share/url?url={CHANNEL_LINK}&text=Dubai Rentals Only - Verified Listings")],
+            [InlineKeyboardButton("🏠 Post a Rental", url=BOT_LINK)],
+            [InlineKeyboardButton("🕵️ Find Tenants", url=BOT_LINK)],
+            [InlineKeyboardButton("🔗 Share Channel", switch_inline_query="Dubai Rentals - Tenants & Agents")],
         ])
-        await context.bot.send_message(
-            CHANNEL_ID,
-            "☀️ <b>Good Morning Dubai!</b>\n\n🏠 Verified rentals only in @dubairentonly\n\nAgents: Post via @Dubairentalsbot\nTenants: Request via @Dubairentalsbot\n\nNo scams. Trakheesi verified. ✅",
-            parse_mode=ParseMode.HTML, reply_markup=kb
-        )
+        await context.bot.send_message(CHANNEL_ID, "👋 *Good Morning Dubai!*\n\n🏠 Tenants - Post your rental need in the bot\n🕵️ Agents - Unlock verified tenant contacts\n\nStart here 👇", reply_markup=kb, parse_mode="Markdown")
     except Exception as e:
-        logger.error(f"Daily post failed: {e}")
+        print("Daily post failed:", e)
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("menu", start))
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.PHOTO, on_photo))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
-    # Daily job - 09:00 UTC+4 = 05:00 UTC
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            ROLE: [
+                CallbackQueryHandler(role_handler, pattern="^role_"),
+                CallbackQueryHandler(restart_handler, pattern="^restart$"),
+                CallbackQueryHandler(help_handler, pattern="^help$"),
+                CallbackQueryHandler(post_another, pattern="^post_another$"),
+                CallbackQueryHandler(buy_another, pattern="^buy_another$"),
+                CallbackQueryHandler(buy_handler, pattern="^buy_"),
+                CallbackQueryHandler(confirm_post, pattern="^confirm_post$"),
+            ],
+            PHONE: [MessageHandler(filters.CONTACT, phone_handler)],
+            T_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, t_location)],
+            T_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, t_type)],
+            T_BUDGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, t_budget)],
+            T_PHOTOS: [MessageHandler(filters.PHOTO | filters.TEXT, t_photos)],
+            T_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, t_desc)],
+            T_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, t_contact)],
+            T_CONFIRM: [CallbackQueryHandler(confirm_post, pattern="^confirm_post$"), CallbackQueryHandler(restart_handler, pattern="^restart$")],
+            AGENT_BROWSE: [CallbackQueryHandler(buy_handler, pattern="^buy_"), CallbackQueryHandler(restart_handler, pattern="^restart$")],
+        },
+        fallbacks=[CommandHandler("start", start), CommandHandler("help", start)],
+        allow_reentry=True
+    )
+    app.add_handler(conv)
+    app.add_handler(CommandHandler("help", start))
+    # Daily welcome at 9 AM Dubai time - runs every 24h
     if app.job_queue:
-        app.job_queue.run_daily(daily_welcome, time=time(hour=5, minute=0))
-    print(f"Bot running @{BOT_USERNAME} -> Channel {CHANNEL_LINK}")
+        app.job_queue.run_repeating(daily_welcome, interval=86400, first=10)
+    print("Bot running...")
     app.run_polling()
 
 if __name__ == "__main__":
