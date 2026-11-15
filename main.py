@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import datetime
 import threading
 import traceback
@@ -49,8 +50,6 @@ print("ADMIN_ID:", os.environ.get("ADMIN_ID"), flush=True)
 CHANNEL_ID = -1004386364968
 CHANNEL_LINK = "https://t.me/dubairentonly"
 BOT_LINK = "https://t.me/Dubairentalsbot"
-BINANCE_ID = os.environ.get("BINANCE_ID", "Ask admin")
-TRC20 = os.environ.get("TRC20_ADDRESS", "Ask admin")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 ADMIN_USERNAME = "@Givon5"
 PRICE_CONTACT = 10
@@ -80,16 +79,15 @@ INT_MOVEIN = 18
 INT_CONTACT = 19
 INT_CONFIRM = 20
 PAY_METHOD = 21
-PAY_BOTH = 22
+A_BACKUP = 22
+T_BACKUP = 23
+INT_BACKUP = 24
 
 users = {}
 agent_posts = []
 tenant_posts = []
 leads = []
-pending = {}
 interested = set()
-seen_txids = set()
-seen_screenshots = set()
 
 DAILY_TIPS = [
  "Good morning Dubai. Take your time. The right home is worth waiting for.",
@@ -124,6 +122,39 @@ DAILY_TIPS = [
  "Your home should support your life, not stress it.",
 ]
 
+def is_valid_backup(txt):
+    t = (txt or "").strip()
+    if not t:
+        return False
+    if "@" in t:
+        # Email check: a@b.c, no spaces
+        if " " in t:
+            return False
+        parts = t.split("@")
+        if len(parts) != 2:
+            return False
+        if not parts[0] or not parts[1]:
+            return False
+        if "." not in parts[1]:
+            return False
+        if parts[1].startswith(".") or parts[1].endswith("."):
+            return False
+        return True
+    # Phone check: allow + , spaces, dashes
+    cleaned = t.replace("+", "").replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    if not cleaned.isdigit():
+        return False
+    if len(cleaned) < 7 or len(cleaned) > 15:
+        return False
+    return True
+
+def format_contact(primary, backup):
+    txt = "1. Verified: " + str(primary)
+    if backup:
+        txt += "\n2. Backup: " + str(backup) + "\n"
+        txt += "(Not verified, added by user)"
+    return txt
+
 def help_text():
     t1 = "HELP\n\n"
     t2 = "Agent: Post PROPERTY free.\n"
@@ -132,14 +163,17 @@ def help_text():
     t5 = "Contact at END. Never public.\n\n"
     t6 = "Contacts: 10 AED (150 Stars).\n"
     t7 = "Pin: 25 AED (375 Stars) for 24h.\n\n"
-    t8 = "Payment: Binance / TRC20 / Stars.\n"
-    t9 = "For Binance / TRC20 send screenshot\n"
-    t10 = "WITH TxID in caption. Both required.\n\n"
-    t11 = "Channel: @dubairentonly\n"
-    t12 = "Complaints / Problem / Refund?\n"
-    t13 = "Contact Admin directly: @Givon5\n"
-    t14 = "Admin will reply fast."
-    return t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8 + t9 + t10 + t11 + t12 + t13 + t14
+    t8 = "Payment: Telegram Stars ONLY.\n"
+    t9 = "Fast & automatic. No screenshot.\n"
+    t10 = "Pay with Stars, get contact instantly.\n\n"
+    t11 = "Backup: You can add optional 2nd\n"
+    t12 = "number / email. Hidden too.\n"
+    t13 = "Backup is NOT verified by bot.\n\n"
+    t14 = "Channel: @dubairentonly\n"
+    t15 = "Complaints / Problem / Refund?\n"
+    t16 = "Contact Admin directly: @Givon5\n"
+    t17 = "Admin will reply fast."
+    return t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8 + t9 + t10 + t11 + t12 + t13 + t14 + t15 + t16 + t17
 
 def main_kb():
     b1 = InlineKeyboardButton(
@@ -249,34 +283,6 @@ async def menu_cmd(update, context):
         reply_markup=main_kb(),
         parse_mode="Markdown")
     return ROLE
-
-async def pending_cmd(update, context):
-    uid = str(update.effective_user.id)
-    if ADMIN_ID and uid != str(ADMIN_ID):
-        await update.message.reply_text("Only admin.")
-        return
-    if not pending:
-        await update.message.reply_text(
-            "No waiting payments.")
-        return
-    for pid, p in list(pending.items()):
-        txt = "Pending #" + str(pid) + "\n"
-        txt += "Buyer: " + str(p["buyer"]) + "\n"
-        txt += "Kind: " + str(p["kind"]) + "\n"
-        txt += "Ref: " + str(p["ref"]) + "\n"
-        txt += "TxID: " + str(p.get("txid", "-")) + "\n"
-        txt += "Amount: " + str(p["price"]) + " AED"
-        cb1 = "admin_approve_" + str(pid)
-        cb2 = "admin_reject_" + str(pid)
-        b1 = InlineKeyboardButton(
-            "Approve #" + str(pid),
-            callback_data=cb1)
-        b2 = InlineKeyboardButton(
-            "Reject #" + str(pid),
-            callback_data=cb2)
-        kb = InlineKeyboardMarkup([[b1], [b2]])
-        await update.message.reply_text(
-            txt, reply_markup=kb)
 
 async def start(update, context):
     args = context.args or []
@@ -434,6 +440,8 @@ async def a_check_contact(update, context):
     if users.get(uid, {}).get("agent_contact"):
         context.user_data["draft"]["agent_contact"] = \
             users[uid]["agent_contact"]
+        context.user_data["draft"]["agent_backup"] = \
+            users[uid].get("agent_backup")
         return await a_preview(update, context)
     await update.message.reply_text(
         "Final Step - Your Contact\n"
@@ -457,8 +465,38 @@ async def a_contact(update, context):
     context.user_data["draft"]["agent_contact"] = \
         update.message.contact.phone_number
     await update.message.reply_text(
-        "Contact saved (private).",
+        "Contact saved (private).\n\n"
+        "Optional Backup (helps if your\n"
+        "main number is virtual / not working)\n"
+        "Send a 2nd number OR email.\n"
+        "Or type skip.\n\n"
+        "Backup is also private. Only buyer sees it.",
         reply_markup=ReplyKeyboardRemove())
+    return A_BACKUP
+
+async def a_backup(update, context):
+    uid = update.effective_user.id
+    txt = (update.message.text or "").strip()
+    if txt.lower() == "skip":
+        context.user_data["draft"]["agent_backup"] = None
+        if uid in users:
+            users[uid]["agent_backup"] = None
+        await update.message.reply_text(
+            "No backup added. Continuing.")
+        return await a_preview(update, context)
+    if not is_valid_backup(txt):
+        await update.message.reply_text(
+            "That doesn't look like a number or email.\n"
+            "Send a valid 2nd number (e.g. +971501234567)\n"
+            "or email (e.g. name@gmail.com)\n"
+            "Or type skip.")
+        return A_BACKUP
+    context.user_data["draft"]["agent_backup"] = txt
+    if uid not in users:
+        users[uid] = {}
+    users[uid]["agent_backup"] = txt
+    await update.message.reply_text(
+        "Backup saved (private).")
     return await a_preview(update, context)
 
 async def a_preview(update, context):
@@ -505,6 +543,7 @@ async def agent_confirm(update, context):
     post["name"] = d.get("name")
     post["photos"] = d.get("photos", [])
     post["agent_contact"] = d.get("agent_contact")
+    post["agent_backup"] = d.get("agent_backup")
     post["channel_msg_id"] = None
     agent_posts.append(post)
     cap = "PROPERTY FOR RENT\n\n"
@@ -590,8 +629,35 @@ async def t_contact(update, context):
     context.user_data["draft"]["contact"] = \
         update.message.contact.phone_number
     await update.message.reply_text(
-        "Contact saved (private).",
+        "Contact saved (private).\n\n"
+        "Optional Backup (helps if your\n"
+        "main number is virtual / not working)\n"
+        "Send a 2nd number OR email.\n"
+        "Or type skip.\n\n"
+        "Backup is also private.",
         reply_markup=ReplyKeyboardRemove())
+    return T_BACKUP
+
+async def t_backup(update, context):
+    txt = (update.message.text or "").strip()
+    if txt.lower() == "skip":
+        context.user_data["draft"]["backup"] = None
+        await update.message.reply_text(
+            "No backup added. Continuing.")
+        return await t_preview(update, context)
+    if not is_valid_backup(txt):
+        await update.message.reply_text(
+            "That doesn't look like a number or email.\n"
+            "Send a valid 2nd number (e.g. +971501234567)\n"
+            "or email (e.g. name@gmail.com)\n"
+            "Or type skip.")
+        return T_BACKUP
+    context.user_data["draft"]["backup"] = txt
+    await update.message.reply_text(
+        "Backup saved (private).")
+    return await t_preview(update, context)
+
+async def t_preview(update, context):
     d = context.user_data["draft"]
     txt = "PREVIEW - WANTED\n\n"
     txt += "Location: " + str(d.get("location")) + "\n"
@@ -622,6 +688,7 @@ async def tenant_confirm(update, context):
     post["budget"] = d.get("budget")
     post["type"] = d.get("type")
     post["contact"] = d.get("contact")
+    post["backup"] = d.get("backup")
     post["channel_msg_id"] = None
     tenant_posts.append(post)
     cap = "TENANT LOOKING FOR RENT\n\n"
@@ -732,8 +799,34 @@ async def int_contact(update, context):
     context.user_data["lead_contact"] = \
         update.message.contact.phone_number
     await update.message.reply_text(
-        "Contact saved.",
+        "Contact saved.\n\n"
+        "Optional Backup (helps if your\n"
+        "main number is virtual / not working)\n"
+        "Send a 2nd number OR email.\n"
+        "Or type skip.",
         reply_markup=ReplyKeyboardRemove())
+    return INT_BACKUP
+
+async def int_backup(update, context):
+    txt = (update.message.text or "").strip()
+    if txt.lower() == "skip":
+        context.user_data["lead_backup"] = None
+        await update.message.reply_text(
+            "No backup added. Continuing.")
+        return await int_preview(update, context)
+    if not is_valid_backup(txt):
+        await update.message.reply_text(
+            "That doesn't look like a number or email.\n"
+            "Send a valid 2nd number (e.g. +971501234567)\n"
+            "or email (e.g. name@gmail.com)\n"
+            "Or type skip.")
+        return INT_BACKUP
+    context.user_data["lead_backup"] = txt
+    await update.message.reply_text(
+        "Backup saved (private).")
+    return await int_preview(update, context)
+
+async def int_preview(update, context):
     pid = context.user_data.get("interested_pid")
     p = agent_posts[pid]
     txt = "CONFIRM - Send to Agent?\n\n"
@@ -775,6 +868,8 @@ async def int_confirm(update, context):
         context.user_data.get("lead_movein")
     new_lead["contact"] = \
         context.user_data.get("lead_contact")
+    new_lead["backup"] = \
+        context.user_data.get("lead_backup")
     leads.append(new_lead)
     cb1 = "pay_lead_" + str(lead_id)
     b1 = InlineKeyboardButton(
@@ -843,26 +938,18 @@ async def show_wanted(update, context, pid):
     return ROLE
 
 def pay_kb(kind, ref_id, price):
-    base1 = "paymethod_binance_" + kind
-    base1 += "_" + str(ref_id) + "_" + str(price)
-    base2 = "paymethod_trc20_" + kind
-    base2 += "_" + str(ref_id) + "_" + str(price)
     base3 = "paymethod_stars_" + kind
     base3 += "_" + str(ref_id) + "_" + str(price)
-    b1 = InlineKeyboardButton(
-        "Binance ID", callback_data=base1)
-    b2 = InlineKeyboardButton(
-        "TRC20 USDT", callback_data=base2)
     if price == PRICE_PIN:
-        star_txt = "Telegram Stars - 375 Stars"
+        star_txt = "Pay with Stars - 375 Stars"
     else:
-        star_txt = "Telegram Stars - 150 Stars"
+        star_txt = "Pay with Stars - 150 Stars"
     b3 = InlineKeyboardButton(
         star_txt, callback_data=base3)
     b4 = InlineKeyboardButton(
         "Cancel", callback_data="restart")
     return InlineKeyboardMarkup(
-        [[b1], [b2], [b3], [b4]])
+        [[b3], [b4]])
 
 async def pay_start(update, context):
     q = update.callback_query
@@ -870,11 +957,10 @@ async def pay_start(update, context):
     parts = q.data.split("_")
     kind = parts[1]
     ref = int(parts[2])
-    context.user_data["pay_start_time"] = \
-        datetime.datetime.now()
     await q.edit_message_text(
         "Pay 10 AED to Unlock Contact\n\n"
-        "Choose payment method:",
+        "Payment: Telegram Stars ONLY.\n"
+        "Fast & automatic.",
         reply_markup=pay_kb(kind, ref, PRICE_CONTACT),
         parse_mode="Markdown")
     return PAY_METHOD
@@ -885,13 +971,11 @@ async def pin_start(update, context):
     parts = q.data.split("_")
     kind = "pin_" + parts[1]
     ref = int(parts[2])
-    context.user_data["pay_start_time"] = \
-        datetime.datetime.now()
     await q.edit_message_text(
         "Pin This Post - 25 AED (24h)\n\n"
         "Your post stays on top for 24h,\n"
         "then auto-unpin.\n\n"
-        "Choose payment method:",
+        "Payment: Telegram Stars ONLY.",
         reply_markup=pay_kb(kind, ref, PRICE_PIN),
         parse_mode="Markdown")
     return PAY_METHOD
@@ -929,148 +1013,8 @@ async def pay_method(update, context):
     price = int(parts[-1])
     ref = int(parts[-2])
     kind = "_".join(parts[2:-2])
-    method = parts[1]
-    context.user_data["pay_kind"] = kind
-    context.user_data["pay_ref"] = ref
-    context.user_data["pay_method"] = method
-    context.user_data["pay_price"] = price
-    if method == "stars":
-        return await send_stars_invoice(
-            update, context, kind, ref, price)
-    if method == "binance":
-        txt = "Binance Pay - " + str(price) + " AED\n\n"
-        txt += "Send " + str(price) + " AED to:\n"
-        txt += BINANCE_ID + "\n\n"
-        txt += "Then send BOTH in ONE message:\n"
-        txt += "1. Screenshot as photo\n"
-        txt += "2. TxID in the CAPTION\n\n"
-        txt += "Example caption: 123456789\n"
-        txt += "No caption = No approval."
-    else:
-        txt = "TRC20 USDT - " + str(price) + " AED\n\n"
-        txt += "Send " + str(price) + " AED USDT to:\n"
-        txt += TRC20 + "\n\n"
-        txt += "Then send BOTH in ONE message:\n"
-        txt += "1. Screenshot as photo\n"
-        txt += "2. Tx Hash in the CAPTION\n\n"
-        txt += "Example caption: a1b2c3...\n"
-        txt += "No caption = No approval."
-    await q.edit_message_text(
-        txt, parse_mode="Markdown")
-    return PAY_BOTH
-
-async def pay_both(update, context):
-    if not update.message.photo and not update.message.document:
-        await update.message.reply_text(
-            "Send BOTH together:\n"
-            "Photo + TxID in caption.\n"
-            "Tap Attach > Photo > Add Caption.")
-        return PAY_BOTH
-    file_id = None
-    file_unique = None
-    if update.message.photo:
-        file_id = update.message.photo[-1].file_id
-        file_unique = update.message.photo[-1].file_unique_id
-    else:
-        file_id = update.message.document.file_id
-        file_unique = update.message.document.file_unique_id
-    txid = (update.message.caption or "").strip()
-    if txid:
-        txid = txid.split()[0].strip()
-    if not txid or len(txid) < 6:
-        await update.message.reply_text(
-            "Missing TxID!\n\n"
-            "You sent screenshot but no TxID.\n"
-            "Resend photo WITH TxID in caption.\n\n"
-            "Example: Send photo, caption = 123456789")
-        return PAY_BOTH
-    if txid in seen_txids:
-        await update.message.reply_text(
-            "This TxID was already used!\n"
-            "Send a NEW payment with NEW TxID.")
-        return PAY_BOTH
-    for pp in pending.values():
-        if pp.get("txid") == txid:
-            await update.message.reply_text(
-                "This TxID is already pending!\n"
-                "Wait for admin approval.")
-            return PAY_BOTH
-    uid = update.effective_user.id
-    kind = context.user_data.get("pay_kind")
-    ref = context.user_data.get("pay_ref")
-    price = context.user_data.get("pay_price")
-    start_t = context.user_data.get("pay_start_time")
-    now = datetime.datetime.now()
-    mins = 0
-    if start_t:
-        mins = int((now - start_t).total_seconds() // 60)
-    is_dup_shot = file_unique in seen_screenshots
-    if file_unique:
-        seen_screenshots.add(file_unique)
-    seen_txids.add(txid)
-    pid = len(pending)
-    np = {}
-    np["kind"] = kind
-    np["ref"] = ref
-    np["buyer"] = uid
-    np["price"] = price
-    np["txid"] = txid
-    np["mins"] = mins
-    np["dup_shot"] = is_dup_shot
-    np["start_time"] = str(start_t) if start_t else "-"
-    np["sent_time"] = str(now)
-    pending[pid] = np
-    if not ADMIN_ID:
-        await update.message.reply_text(
-            "PENDING - But ADMIN_ID not set!",
-            parse_mode="Markdown")
-        return ROLE
-    try:
-        cap = "New Payment #" + str(pid) + "\n"
-        cap += "Buyer: " + str(uid) + "\n"
-        cap += "Kind: " + str(kind) + "\n"
-        cap += "Ref: " + str(ref) + "\n"
-        cap += "Amount: " + str(price) + " AED\n"
-        cap += "Method: "
-        cap += str(context.user_data.get("pay_method")) + "\n"
-        cap += "TxID: " + str(txid) + "\n"
-        cap += "Time: Started " + str(start_t) + "\n"
-        cap += "Sent " + str(now) + "\n"
-        cap += "Delay: " + str(mins) + " min\n"
-        if is_dup_shot:
-            cap += "WARNING: DUPLICATE SCREENSHOT!\n"
-        else:
-            cap += "Screenshot: NEW\n"
-        if mins > 30:
-            cap += "WARNING: OLD - Over 30 min!\n"
-        if str(context.user_data.get("pay_method")) == "trc20":
-            cap += "Check: tronscan.org/#/transaction/"
-            cap += str(txid)
-        cb1 = "admin_approve_" + str(pid)
-        cb2 = "admin_reject_" + str(pid)
-        b1 = InlineKeyboardButton(
-            "Approve", callback_data=cb1)
-        b2 = InlineKeyboardButton(
-            "Reject", callback_data=cb2)
-        kb = InlineKeyboardMarkup([[b1], [b2]])
-        await context.bot.send_photo(
-            int(ADMIN_ID), file_id,
-            caption=cap,
-            reply_markup=kb,
-            parse_mode="Markdown")
-    except Exception as e:
-        print("Admin forward fail", e)
-        await update.message.reply_text(
-            "PENDING - Admin forward failed: " + str(e),
-            parse_mode="Markdown")
-        return ROLE
-    await update.message.reply_text(
-        "PENDING - Waiting for Admin Approval\n\n"
-        "TxID: " + str(txid) + "\n"
-        "Screenshot + TxID sent to admin.\n\n"
-        "Complaint? Contact @Givon5",
-        parse_mode="Markdown")
-    return ROLE
+    return await send_stars_invoice(
+        update, context, kind, ref, price)
 
 async def precheckout(update, context):
     q = update.pre_checkout_query
@@ -1091,70 +1035,23 @@ async def successful_payment(update, context):
         context, buyer, kind, ref, price)
     return ROLE
 
-async def admin_decision(update, context):
-    q = update.callback_query
-    await q.answer("Processing...", show_alert=False)
-    parts = q.data.split("_")
-    action = parts[1]
-    pid = int(parts[2])
-    p = pending.get(pid)
-    if not p:
-        try:
-            await q.answer(
-                "Already handled.", show_alert=True)
-        except Exception:
-            pass
-        return ROLE
-    buyer = p["buyer"]
-    kind = p["kind"]
-    ref = p["ref"]
-    price = p["price"]
-    done_txt = "Approved " + str(pid) + "."
-    if action != "approve":
-        done_txt = "Rejected " + str(pid) + "."
-    try:
-        if q.message and q.message.photo:
-            await q.edit_message_caption(
-                caption=done_txt,
-                reply_markup=None)
-        else:
-            await q.edit_message_text(
-                done_txt, reply_markup=None)
-    except Exception:
-        try:
-            await context.bot.send_message(
-                q.from_user.id, done_txt)
-        except Exception:
-            pass
-    if action == "approve":
-        await deliver_to_buyer(
-            context, buyer, kind, ref, price)
-    else:
-        if not p.get("dup_shot"):
-            tx = p.get("txid")
-            if tx in seen_txids:
-                seen_txids.discard(tx)
-        try:
-            await context.bot.send_message(
-                buyer,
-                "Payment Rejected - Not Received\n"
-                "Admin did not find payment.\n"
-                "Complaint? Contact @Givon5",
-                parse_mode="Markdown")
-        except Exception as e:
-            print("Reject DM fail", e)
-    pending.pop(pid, None)
-    return ROLE
-
 def get_contact_for(kind, ref):
     if kind == "lead":
-        return leads[ref]["contact"]
+        lead = leads[ref]
+        return format_contact(
+            lead.get("contact"),
+            lead.get("backup"))
     if kind == "agent":
         lead = leads[ref]
         post = agent_posts[lead["agent_post_id"]]
-        return post.get("agent_contact", "No contact")
+        return format_contact(
+            post.get("agent_contact"),
+            post.get("agent_backup"))
     if kind == "wanted":
-        return tenant_posts[ref]["contact"]
+        post = tenant_posts[ref]
+        return format_contact(
+            post.get("contact"),
+            post.get("backup"))
     return "Not found"
 
 async def deliver_to_buyer(context, buyer, kind, ref, price):
@@ -1167,6 +1064,7 @@ async def deliver_to_buyer(context, buyer, kind, ref, price):
             await context.bot.send_message(
                 buyer,
                 "Payment received, but post not found.\n"
+                "It was deleted after restart.\n"
                 "Contact admin @Givon5 for refund.",
                 parse_mode="Markdown")
             return
@@ -1206,7 +1104,8 @@ async def deliver_to_buyer(context, buyer, kind, ref, price):
         buyer,
         "Payment Approved!\n\n"
         "Here is contact:\n" + str(contact)
-        + "\n\nWhat next?",
+        + "\n\nIf both don't work, contact @Givon5\n\n"
+        "What next?",
         reply_markup=main_kb(),
         parse_mode="Markdown")
 
@@ -1214,7 +1113,6 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("id", id_cmd))
     app.add_handler(CommandHandler("unpin", unpin_cmd))
-    app.add_handler(CommandHandler("pending", pending_cmd))
     app.add_handler(
         PreCheckoutQueryHandler(precheckout))
     app.add_handler(MessageHandler(
@@ -1228,8 +1126,6 @@ def main():
         ],
         states={
             ROLE: [
-                CallbackQueryHandler(
-                    admin_decision, pattern="^admin_"),
                 CallbackQueryHandler(
                     role_handler, pattern="^role_"),
                 CallbackQueryHandler(
@@ -1275,9 +1171,9 @@ def main():
                 filters.CONTACT, a_verify)],
             A_CONTACT: [MessageHandler(
                 filters.CONTACT, a_contact)],
+            A_BACKUP: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, a_backup)],
             A_CONFIRM: [
-                CallbackQueryHandler(
-                    admin_decision, pattern="^admin_"),
                 CallbackQueryHandler(
                     agent_confirm,
                     pattern="^agent_confirm$"),
@@ -1293,9 +1189,9 @@ def main():
                 filters.TEXT & ~filters.COMMAND, t_type)],
             T_CONTACT: [MessageHandler(
                 filters.CONTACT, t_contact)],
+            T_BACKUP: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, t_backup)],
             T_CONFIRM: [
-                CallbackQueryHandler(
-                    admin_decision, pattern="^admin_"),
                 CallbackQueryHandler(
                     tenant_confirm,
                     pattern="^tenant_confirm$"),
@@ -1309,9 +1205,9 @@ def main():
                 filters.TEXT & ~filters.COMMAND, int_movein)],
             INT_CONTACT: [MessageHandler(
                 filters.CONTACT, int_contact)],
+            INT_BACKUP: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, int_backup)],
             INT_CONFIRM: [
-                CallbackQueryHandler(
-                    admin_decision, pattern="^admin_"),
                 CallbackQueryHandler(
                     int_confirm, pattern="^int_confirm$"),
                 CallbackQueryHandler(
@@ -1320,24 +1216,17 @@ def main():
                     help_handler, pattern="^help$")],
             PAY_METHOD: [
                 CallbackQueryHandler(
-                    admin_decision, pattern="^admin_"),
-                CallbackQueryHandler(
                     pay_method, pattern="^paymethod_"),
                 CallbackQueryHandler(
                     restart_handler, pattern="^restart$"),
                 CallbackQueryHandler(
                     help_handler, pattern="^help$"),
             ],
-            PAY_BOTH: [MessageHandler(
-                filters.PHOTO | filters.Document.IMAGE | filters.TEXT,
-                pay_both)],
         },
         fallbacks=[
             CommandHandler("start", start),
             CommandHandler("menu", menu_cmd),
             CommandHandler("help", help_cmd),
-            CallbackQueryHandler(
-                admin_decision, pattern="^admin_"),
             CallbackQueryHandler(
                 restart_handler, pattern="^restart$"),
             CallbackQueryHandler(
@@ -1349,9 +1238,6 @@ def main():
         per_message=False,
     )
     app.add_handler(conv)
-    app.add_handler(
-        CallbackQueryHandler(
-            admin_decision, pattern="^admin_"))
     app.add_error_handler(on_error)
     if app.job_queue:
         app.job_queue.run_daily(
