@@ -1,3 +1,5 @@
+print("STARTING...", flush=True)
+print("TOKEN LEN:", len(BOT_TOKEN or ""), flush=True)
 import os
 import threading
 from http.server import BaseHTTPRequestHandler
