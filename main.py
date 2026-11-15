@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import json
 import datetime
 import threading
 import traceback
@@ -83,11 +84,47 @@ A_BACKUP = 22
 T_BACKUP = 23
 INT_BACKUP = 24
 
+# --- PERSISTENCE FIX ONLY ---
+DATA_FILE = "data.json"
+
 users = {}
 agent_posts = []
 tenant_posts = []
 leads = []
 interested = set()
+
+def save_data():
+    try:
+        data = {
+            "users": {str(k): v for k, v in users.items()},
+            "agent_posts": agent_posts,
+            "tenant_posts": tenant_posts,
+            "leads": leads,
+            "interested": [list(x) for x in interested],
+        }
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print("Save fail", e)
+
+def load_data():
+    global users, agent_posts, tenant_posts, leads, interested
+    try:
+        if not os.path.exists(DATA_FILE):
+            print("No data file, starting fresh")
+            return
+        with open(DATA_FILE, "r") as f:
+            data = json.load(f)
+        users = {int(k): v for k, v in data.get("users", {}).items()}
+        agent_posts = data.get("agent_posts", [])
+        tenant_posts = data.get("tenant_posts", [])
+        leads = data.get("leads", [])
+        interested = set(tuple(x) for x in data.get("interested", []))
+        print(f"Loaded: {len(agent_posts)} agent posts, {len(tenant_posts)} tenant posts, {len(leads)} leads")
+    except Exception as e:
+        print("Load fail", e)
+
+load_data()
 
 DAILY_TIPS = [
  "Good morning Dubai. Take your time. The right home is worth waiting for.",
@@ -122,12 +159,10 @@ DAILY_TIPS = [
  "Your home should support your life, not stress it.",
 ]
 
-# --- ONLY THIS FUNCTION WAS CHANGED FOR THE FIX ---
 def is_valid_backup(txt):
     t = (txt or "").strip()
     if not t:
         return False
-    # Email - must have @ and .
     if "@" in t:
         if " " in t:
             return False
@@ -141,14 +176,11 @@ def is_valid_backup(txt):
         if parts[1].startswith(".") or parts[1].endswith("."):
             return False
         return True
-    # Phone - MUST start with + and country code
-    # FIX: 7667876, 501234567, 0501234567 now REJECTED
     if not t.startswith("+"):
         return False
     cleaned = t[1:].replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
     if not cleaned.isdigit():
         return False
-    # +971501234567 = 12 digits after +
     if len(cleaned) < 8 or len(cleaned) > 15:
         return False
     return True
@@ -437,6 +469,7 @@ async def a_verify(update, context):
     users[uid]["verified"] = True
     users[uid]["verify_phone"] = \
         update.message.contact.phone_number
+    save_data()
     await update.message.reply_text(
         "Verified! No need again.",
         reply_markup=ReplyKeyboardRemove())
@@ -471,6 +504,7 @@ async def a_contact(update, context):
         update.message.contact.phone_number
     context.user_data["draft"]["agent_contact"] = \
         update.message.contact.phone_number
+    save_data()
     await update.message.reply_text(
         "Contact saved (private).\n\n"
         "Optional Backup (helps if your\n"
@@ -489,6 +523,7 @@ async def a_backup(update, context):
         context.user_data["draft"]["agent_backup"] = None
         if uid in users:
             users[uid]["agent_backup"] = None
+            save_data()
         await update.message.reply_text(
             "No backup added. Continuing.")
         return await a_preview(update, context)
@@ -504,6 +539,7 @@ async def a_backup(update, context):
     if uid not in users:
         users[uid] = {}
     users[uid]["agent_backup"] = txt
+    save_data()
     await update.message.reply_text(
         "Backup saved (private).")
     return await a_preview(update, context)
@@ -555,6 +591,7 @@ async def agent_confirm(update, context):
     post["agent_backup"] = d.get("agent_backup")
     post["channel_msg_id"] = None
     agent_posts.append(post)
+    save_data()
     cap = "PROPERTY FOR RENT\n\n"
     cap += "Location: " + str(d.get("location")) + "\n"
     cap += "Rent: " + str(d.get("rent")) + "\n"
@@ -582,6 +619,7 @@ async def agent_confirm(update, context):
                 CHANNEL_ID, cap, reply_markup=kb,
                 parse_mode="Markdown")
         post["channel_msg_id"] = msg.message_id
+        save_data()
         posted = True
     except Exception as e:
         print("Channel post fail", e)
@@ -702,6 +740,7 @@ async def tenant_confirm(update, context):
     post["backup"] = d.get("backup")
     post["channel_msg_id"] = None
     tenant_posts.append(post)
+    save_data()
     cap = "TENANT LOOKING FOR RENT\n\n"
     cap += "Wanted: " + str(d.get("location")) + "\n"
     cap += "Budget: " + str(d.get("budget")) + "\n"
@@ -719,6 +758,7 @@ async def tenant_confirm(update, context):
             CHANNEL_ID, cap, reply_markup=kb,
             parse_mode="Markdown")
         post["channel_msg_id"] = msg.message_id
+        save_data()
         posted = True
     except Exception as e:
         print("Channel post fail", e)
@@ -744,7 +784,11 @@ async def tenant_confirm(update, context):
 async def show_agent_post(update, context, pid):
     if pid >= len(agent_posts):
         await update.message.reply_text(
-            "Post not found.", reply_markup=main_kb())
+            "This post is no longer available.\n"
+            "It was made before bot restart.\n"
+            "Please ask agent to re-post.\n"
+            "Or check new posts in channel.",
+            reply_markup=main_kb())
         return ROLE
     p = agent_posts[pid]
     context.user_data["interested_pid"] = pid
@@ -884,6 +928,7 @@ async def int_confirm(update, context):
     new_lead["backup"] = \
         context.user_data.get("lead_backup")
     leads.append(new_lead)
+    save_data()
     cb1 = "pay_lead_" + str(lead_id)
     b1 = InlineKeyboardButton(
         "Pay 10 AED to Unlock Contact",
@@ -930,7 +975,10 @@ async def int_confirm(update, context):
 async def show_wanted(update, context, pid):
     if pid >= len(tenant_posts):
         await update.message.reply_text(
-            "Post not found.", reply_markup=main_kb())
+            "This post is no longer available.\n"
+            "It was made before bot restart.\n"
+            "Please ask tenant to re-post.",
+            reply_markup=main_kb())
         return ROLE
     p = tenant_posts[pid]
     context.user_data["wanted_pid"] = pid
