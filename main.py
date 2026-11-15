@@ -235,6 +235,7 @@ async def id_cmd(update, context):
     await update.message.reply_text(txt)
 
 async def menu_cmd(update, context):
+    context.user_data.clear()
     await update.message.reply_text(
         "Main Menu\nWhat do you want to do?",
         reply_markup=main_kb(),
@@ -276,6 +277,7 @@ async def start(update, context):
     if args and args[0].startswith("wanted_"):
         pid = int(args[0].split("_")[1])
         return await show_wanted(update, context, pid)
+    context.user_data.clear()
     txt = "Welcome to Dubai Rentals!\n"
     txt += "Posting FREE. Contacts 10 AED.\n"
     txt += "Pin 25 AED (24h).\n\nWho are you?"
@@ -304,6 +306,7 @@ async def help_handler(update, context):
     return ROLE
 
 async def help_cmd(update, context):
+    context.user_data.clear()
     await update.message.reply_text(
         help_text(),
         reply_markup=main_kb(),
@@ -1124,11 +1127,7 @@ async def deliver_to_buyer(context, buyer, kind, ref, price):
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(
-        CallbackQueryHandler(help_handler, pattern="^help$"))
-    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("id", id_cmd))
-    app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("unpin", unpin_cmd))
     app.add_handler(CommandHandler("pending", pending_cmd))
     app.add_handler(
@@ -1140,13 +1139,19 @@ def main():
         filters.SUCCESSFUL_PAYMENT,
         successful_payment))
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            CommandHandler("menu", menu_cmd),
+            CommandHandler("help", help_cmd),
+        ],
         states={
             ROLE: [
                 CallbackQueryHandler(
                     role_handler, pattern="^role_"),
                 CallbackQueryHandler(
                     restart_handler, pattern="^restart$"),
+                CallbackQueryHandler(
+                    help_handler, pattern="^help$"),
                 CallbackQueryHandler(
                     int_yes, pattern="^int_yes$"),
                 CallbackQueryHandler(
@@ -1194,7 +1199,9 @@ def main():
                     agent_confirm,
                     pattern="^agent_confirm$"),
                 CallbackQueryHandler(
-                    restart_handler, pattern="^restart$")],
+                    restart_handler, pattern="^restart$"),
+                CallbackQueryHandler(
+                    help_handler, pattern="^help$")],
             T_LOC: [MessageHandler(
                 filters.TEXT & ~filters.COMMAND, t_loc)],
             T_BUDGET: [MessageHandler(
@@ -1208,7 +1215,9 @@ def main():
                     tenant_confirm,
                     pattern="^tenant_confirm$"),
                 CallbackQueryHandler(
-                    restart_handler, pattern="^restart$")],
+                    restart_handler, pattern="^restart$"),
+                CallbackQueryHandler(
+                    help_handler, pattern="^help$")],
             INT_BUDGET: [MessageHandler(
                 filters.TEXT & ~filters.COMMAND, int_budget)],
             INT_MOVEIN: [MessageHandler(
@@ -1219,7 +1228,9 @@ def main():
                 CallbackQueryHandler(
                     int_confirm, pattern="^int_confirm$"),
                 CallbackQueryHandler(
-                    restart_handler, pattern="^restart$")],
+                    restart_handler, pattern="^restart$"),
+                CallbackQueryHandler(
+                    help_handler, pattern="^help$")],
             PAY_METHOD: [
                 CallbackQueryHandler(
                     pay_method, pattern="^paymethod_"),
@@ -1228,12 +1239,24 @@ def main():
                     pattern="^upload_shot$"),
                 CallbackQueryHandler(
                     restart_handler, pattern="^restart$"),
+                CallbackQueryHandler(
+                    help_handler, pattern="^help$"),
             ],
             PAY_SCREENSHOT: [MessageHandler(
                 filters.PHOTO | filters.Document.IMAGE,
                 pay_screenshot)],
         },
-        fallbacks=[CommandHandler("start", start)],
+        fallbacks=[
+            CommandHandler("start", start),
+            CommandHandler("menu", menu_cmd),
+            CommandHandler("help", help_cmd),
+            CallbackQueryHandler(
+                restart_handler, pattern="^restart$"),
+            CallbackQueryHandler(
+                help_handler, pattern="^help$"),
+            CallbackQueryHandler(
+                role_handler, pattern="^role_"),
+        ],
         allow_reentry=True,
         per_message=False,
     )
