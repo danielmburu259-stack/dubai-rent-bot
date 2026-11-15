@@ -1,7 +1,7 @@
-print("STARTING...", flush=True)
-print("TOKEN LEN:", len(BOT_TOKEN or ""), flush=True)
 import os
 import threading
+import traceback
+import sys
 from http.server import BaseHTTPRequestHandler
 from http.server import HTTPServer
 
@@ -36,6 +36,8 @@ from telegram.ext import filters
 from telegram.ext import ConversationHandler
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+print("STARTING...", flush=True)
+print("TOKEN LEN:", len(BOT_TOKEN or ""), flush=True)
 CHANNEL_ID = -1004386364968
 CHANNEL_LINK = "https://t.me/dubairentonly"
 BOT_LINK = "https://t.me/Dubairentalsbot"
@@ -614,4 +616,497 @@ async def int_contact(update, context):
     p = agent_posts[pid]
     txt = "CONFIRM - Send to Agent?\n\n"
     txt += "Property: " + str(p.get("location"))
-    tx
+    txt += " - " + str(p.get("rent")) + "\n"
+    txt += "Your Budget: "
+    txt += str(context.user_data.get("lead_budget")) + "\n"
+    txt += "Move-in: "
+    txt += str(context.user_data.get("lead_movein")) + "\n"
+    txt += "Your Contact: "
+    txt += str(context.user_data.get("lead_contact"))
+    txt += " (private)\n\nSend?"
+    b1 = InlineKeyboardButton(
+        "Yes, Send to Agent",
+        callback_data="int_confirm")
+    b2 = InlineKeyboardButton(
+        "Cancel", callback_data="restart")
+    kb = InlineKeyboardMarkup([[b1], [b2]])
+    await update.message.reply_text(
+        txt, reply_markup=kb, parse_mode="Markdown")
+    return INT_CONFIRM
+
+async def int_confirm(update, context):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    pid = context.user_data.get("interested_pid")
+    p = agent_posts[pid]
+    interested.add((uid, pid))
+    lead_id = len(leads)
+    new_lead = {}
+    new_lead["id"] = lead_id
+    new_lead["agent_post_id"] = pid
+    new_lead["tenant_id"] = uid
+    new_lead["agent_id"] = p["owner"]
+    new_lead["budget"] = \
+        context.user_data.get("lead_budget")
+    new_lead["movein"] = \
+        context.user_data.get("lead_movein")
+    new_lead["contact"] = \
+        context.user_data.get("lead_contact")
+    leads.append(new_lead)
+    cb1 = "pay_lead_" + str(lead_id)
+    b1 = InlineKeyboardButton(
+        "Pay 10 AED to Unlock Contact",
+        callback_data=cb1)
+    b2 = InlineKeyboardButton(
+        "Help", callback_data="help")
+    agent_kb = InlineKeyboardMarkup([[b1], [b2]])
+    try:
+        m = "NEW INTERESTED TENANT!\n\n"
+        m += "Property: " + str(p.get("location"))
+        m += " - " + str(p.get("rent")) + "\n"
+        m += "Tenant Budget: "
+        m += str(context.user_data.get("lead_budget")) + "\n"
+        m += "Move-in: "
+        m += str(context.user_data.get("lead_movein")) + "\n"
+        m += "Contact: HIDDEN - Pay 10 AED to unlock"
+        await context.bot.send_message(
+            p["owner"], m,
+            reply_markup=agent_kb,
+            parse_mode="Markdown")
+    except Exception as e:
+        print("Agent DM fail", e)
+    cb2 = "pay_agent_" + str(lead_id)
+    b3 = InlineKeyboardButton(
+        "Get Agent Contact - 10 AED",
+        callback_data=cb2)
+    b4 = InlineKeyboardButton(
+        "Let Agent Contact Me",
+        callback_data="restart")
+    b5 = InlineKeyboardButton(
+        "Help", callback_data="help")
+    tenant_kb = InlineKeyboardMarkup(
+        [[b3], [b4], [b5]])
+    await q.edit_message_text(
+        "Sent to Agent!\n"
+        "Agent got Budget + Move-in,\n"
+        "but NOT your contact yet.\n"
+        "He must pay 10 AED to see it.\n\n"
+        "Do you want Agent contact now?",
+        reply_markup=tenant_kb,
+        parse_mode="Markdown")
+    return ROLE
+
+async def show_wanted(update, context, pid):
+    if pid >= len(tenant_posts):
+        await update.message.reply_text(
+            "Post not found.", reply_markup=main_kb())
+        return ROLE
+    p = tenant_posts[pid]
+    context.user_data["wanted_pid"] = pid
+    txt = "WANTED\n\n"
+    txt += "Location: " + str(p.get("location")) + "\n"
+    txt += "Budget: " + str(p.get("budget")) + "\n"
+    txt += "Type: " + str(p.get("type")) + "\n\n"
+    txt += "Get Tenant contact for 10 AED?"
+    cb = "pay_wanted_" + str(pid)
+    b1 = InlineKeyboardButton(
+        "Pay 10 AED - Get Contact",
+        callback_data=cb)
+    b2 = InlineKeyboardButton(
+        "No", callback_data="restart")
+    kb = InlineKeyboardMarkup([[b1], [b2]])
+    await update.message.reply_text(
+        txt, reply_markup=kb, parse_mode="Markdown")
+    return ROLE
+
+def pay_kb(kind, ref_id, price):
+    base1 = "paymethod_binance_" + kind
+    base1 += "_" + str(ref_id) + "_" + str(price)
+    base2 = "paymethod_trc20_" + kind
+    base2 += "_" + str(ref_id) + "_" + str(price)
+    base3 = "paymethod_stars_" + kind
+    base3 += "_" + str(ref_id) + "_" + str(price)
+    b1 = InlineKeyboardButton(
+        "Binance ID", callback_data=base1)
+    b2 = InlineKeyboardButton(
+        "TRC20 USDT", callback_data=base2)
+    b3 = InlineKeyboardButton(
+        "Telegram Stars (Auto)", callback_data=base3)
+    b4 = InlineKeyboardButton(
+        "Cancel", callback_data="restart")
+    return InlineKeyboardMarkup(
+        [[b1], [b2], [b3], [b4]])
+
+async def pay_start(update, context):
+    q = update.callback_query
+    await q.answer()
+    parts = q.data.split("_")
+    kind = parts[1]
+    ref = int(parts[2])
+    await q.edit_message_text(
+        "Pay 10 AED to Unlock Contact\n\n"
+        "Choose payment method:",
+        reply_markup=pay_kb(kind, ref, PRICE_CONTACT),
+        parse_mode="Markdown")
+    return PAY_METHOD
+
+async def pin_start(update, context):
+    q = update.callback_query
+    await q.answer()
+    parts = q.data.split("_")
+    kind = "pin_" + parts[1]
+    ref = int(parts[2])
+    await q.edit_message_text(
+        "Pin This Post - 25 AED (24h)\n\n"
+        "Your post stays on top for 24h,\n"
+        "then auto-unpin.\n\n"
+        "Choose payment method:",
+        reply_markup=pay_kb(kind, ref, PRICE_PIN),
+        parse_mode="Markdown")
+    return PAY_METHOD
+
+async def pay_method(update, context):
+    q = update.callback_query
+    await q.answer()
+    parts = q.data.split("_")
+    price = int(parts[-1])
+    ref = int(parts[-2])
+    kind = "_".join(parts[2:-2])
+    method = parts[1]
+    context.user_data["pay_kind"] = kind
+    context.user_data["pay_ref"] = ref
+    context.user_data["pay_method"] = method
+    context.user_data["pay_price"] = price
+    if method == "stars":
+        cb = "stars_done_" + kind
+        cb += "_" + str(ref) + "_" + str(price)
+        b = InlineKeyboardButton(
+            "Confirm Stars Paid",
+            callback_data=cb)
+        kb = InlineKeyboardMarkup([[b]])
+        await q.edit_message_text(
+            "Telegram Stars - " + str(price) + " AED\n\n"
+            "Tap Confirm.",
+            reply_markup=kb,
+            parse_mode="Markdown")
+        return PAY_METHOD
+    if method == "binance":
+        txt = "Binance Pay - " + str(price) + " AED\n\n"
+        txt += "Send " + str(price) + " AED to:\n"
+        txt += BINANCE_ID + "\n\n"
+        txt += "Then send screenshot here."
+    else:
+        txt = "TRC20 USDT - " + str(price) + " AED\n\n"
+        txt += "Send " + str(price) + " AED USDT to:\n"
+        txt += TRC20 + "\n\n"
+        txt += "Then send screenshot here."
+    b = InlineKeyboardButton(
+        "I Sent - Upload Screenshot",
+        callback_data="upload_shot")
+    kb = InlineKeyboardMarkup([[b]])
+    await q.edit_message_text(
+        txt, reply_markup=kb, parse_mode="Markdown")
+    return PAY_SCREENSHOT
+
+async def upload_shot_prompt(update, context):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text(
+        "Send payment screenshot now as photo.")
+    return PAY_SCREENSHOT
+
+async def pay_screenshot(update, context):
+    if not update.message.photo:
+        await update.message.reply_text(
+            "Send screenshot as photo.")
+        return PAY_SCREENSHOT
+    uid = update.effective_user.id
+    kind = context.user_data.get("pay_kind")
+    ref = context.user_data.get("pay_ref")
+    price = context.user_data.get("pay_price")
+    pid = len(pending)
+    np = {}
+    np["kind"] = kind
+    np["ref"] = ref
+    np["buyer"] = uid
+    np["price"] = price
+    pending[pid] = np
+    if ADMIN_ID:
+        try:
+            cap = "New Payment\n"
+            cap += "Buyer: " + str(uid) + "\n"
+            cap += "Kind: " + str(kind) + "\n"
+            cap += "Ref: " + str(ref) + "\n"
+            cap += "Amount: " + str(price) + " AED\n"
+            cap += "Method: "
+            cap += str(context.user_data.get("pay_method"))
+            cb1 = "admin_approve_" + str(pid)
+            cb2 = "admin_reject_" + str(pid)
+            b1 = InlineKeyboardButton(
+                "Approve", callback_data=cb1)
+            b2 = InlineKeyboardButton(
+                "Reject", callback_data=cb2)
+            kb = InlineKeyboardMarkup([[b1], [b2]])
+            await context.bot.send_photo(
+                int(ADMIN_ID),
+                update.message.photo[-1].file_id,
+                caption=cap,
+                reply_markup=kb,
+                parse_mode="Markdown")
+        except Exception as e:
+            print("Admin forward fail", e)
+    await update.message.reply_text(
+        "PENDING - Waiting for Admin Approval\n\n"
+        "Screenshot sent to admin.",
+        parse_mode="Markdown")
+    return ROLE
+
+async def stars_done(update, context):
+    q = update.callback_query
+    await q.answer()
+    parts = q.data.split("_")
+    price = int(parts[-1])
+    ref = int(parts[-2])
+    kind = "_".join(parts[2:-2])
+    await deliver_payment(q, context, kind, ref, price)
+    return ROLE
+
+async def admin_decision(update, context):
+    q = update.callback_query
+    await q.answer()
+    parts = q.data.split("_")
+    action = parts[1]
+    pid = int(parts[2])
+    p = pending.get(pid)
+    if not p:
+        await q.edit_message_text("Already handled.")
+        return ROLE
+    buyer = p["buyer"]
+    kind = p["kind"]
+    ref = p["ref"]
+    price = p["price"]
+    if action == "approve":
+        await q.edit_message_text(
+            "Approved " + str(pid) + ".")
+        await deliver_to_buyer(
+            context, buyer, kind, ref, price)
+    else:
+        await q.edit_message_text(
+            "Rejected " + str(pid) + ".")
+        await context.bot.send_message(
+            buyer,
+            "Payment Rejected - Not Received\n"
+            "Admin did not find payment.",
+            parse_mode="Markdown")
+    pending.pop(pid, None)
+    return ROLE
+
+def get_contact_for(kind, ref):
+    if kind == "lead":
+        return leads[ref]["contact"]
+    if kind == "agent":
+        lead = leads[ref]
+        post = agent_posts[lead["agent_post_id"]]
+        return post.get("agent_contact", "No contact")
+    if kind == "wanted":
+        return tenant_posts[ref]["contact"]
+    return "Not found"
+
+async def deliver_to_buyer(context, buyer, kind, ref, price):
+    if kind.startswith("pin_"):
+        pk = kind.split("_")[1]
+        posts = agent_posts
+        if pk != "agent":
+            posts = tenant_posts
+        if ref < len(posts):
+            mid = posts[ref].get("channel_msg_id")
+            try:
+                if mid:
+                    await context.bot.pin_chat_message(
+                        CHANNEL_ID, mid,
+                        disable_notification=True)
+                    schedule_unpin(
+                        context.application, mid)
+                    await context.bot.send_message(
+                        buyer,
+                        "Payment Approved!\n\n"
+                        "Your post is PINNED for 24h.\n"
+                        "Then auto-unpin.",
+                        parse_mode="Markdown")
+                else:
+                    await context.bot.send_message(
+                        buyer,
+                        "Approved, but post not found.",
+                        parse_mode="Markdown")
+            except Exception as e:
+                await context.bot.send_message(
+                    buyer,
+                    "Approved, but pin failed: " + str(e),
+                    parse_mode="Markdown")
+        return
+    contact = get_contact_for(kind, ref)
+    await context.bot.send_message(
+        buyer,
+        "Payment Approved!\n\n"
+        "Here is contact:\n" + str(contact),
+        parse_mode="Markdown")
+
+async def deliver_payment(q, context, kind, ref, price):
+    if kind.startswith("pin_"):
+        pk = kind.split("_")[1]
+        posts = agent_posts
+        if pk != "agent":
+            posts = tenant_posts
+        if ref < len(posts):
+            mid = posts[ref].get("channel_msg_id")
+            try:
+                if mid:
+                    await context.bot.pin_chat_message(
+                        CHANNEL_ID, mid,
+                        disable_notification=True)
+                    schedule_unpin(
+                        context.application, mid)
+                    await q.edit_message_text(
+                        "Payment Confirmed (Stars)!\n\n"
+                        "Your post is PINNED for 24h.",
+                        reply_markup=main_kb(),
+                        parse_mode="Markdown")
+                else:
+                    await q.edit_message_text(
+                        "Payment Confirmed, post not found.",
+                        reply_markup=main_kb())
+            except Exception as e:
+                await q.edit_message_text(
+                    "Payment Confirmed, pin failed: "
+                    + str(e),
+                    reply_markup=main_kb())
+        return
+    contact = get_contact_for(kind, ref)
+    await q.edit_message_text(
+        "Payment Confirmed (Stars)!\n\n"
+        "Contact:\n" + str(contact),
+        reply_markup=main_kb(),
+        parse_mode="Markdown")
+
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(
+        CallbackQueryHandler(help_handler, pattern="^help$"))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("id", id_cmd))
+    app.add_handler(CommandHandler("unpin", unpin_cmd))
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            ROLE: [
+                CallbackQueryHandler(
+                    role_handler, pattern="^role_"),
+                CallbackQueryHandler(
+                    restart_handler, pattern="^restart$"),
+                CallbackQueryHandler(
+                    int_yes, pattern="^int_yes$"),
+                CallbackQueryHandler(
+                    int_confirm, pattern="^int_confirm$"),
+                CallbackQueryHandler(
+                    pay_start,
+                    pattern="^pay_(lead|agent|wanted)_"),
+                CallbackQueryHandler(
+                    pin_start,
+                    pattern="^pin_(agent|tenant)_"),
+                CallbackQueryHandler(
+                    pay_method, pattern="^paymethod_"),
+                CallbackQueryHandler(
+                    admin_decision, pattern="^admin_"),
+                CallbackQueryHandler(
+                    stars_done, pattern="^stars_done_"),
+                CallbackQueryHandler(
+                    agent_confirm,
+                    pattern="^agent_confirm$"),
+                CallbackQueryHandler(
+                    tenant_confirm,
+                    pattern="^tenant_confirm$"),
+                CallbackQueryHandler(
+                    upload_shot_prompt,
+                    pattern="^upload_shot$"),
+            ],
+            A_LOC: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, a_loc)],
+            A_RENT: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, a_rent)],
+            A_TYPE: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, a_type)],
+            A_FURN: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, a_furn)],
+            A_AVAIL: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, a_avail)],
+            A_PHOTOS: [MessageHandler(
+                filters.PHOTO | filters.TEXT, a_photos)],
+            A_DESC: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, a_desc)],
+            A_NAME: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, a_name)],
+            A_VERIFY: [MessageHandler(
+                filters.CONTACT, a_verify)],
+            A_CONTACT: [MessageHandler(
+                filters.CONTACT, a_contact)],
+            A_CONFIRM: [
+                CallbackQueryHandler(
+                    agent_confirm,
+                    pattern="^agent_confirm$"),
+                CallbackQueryHandler(
+                    restart_handler, pattern="^restart$")],
+            T_LOC: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, t_loc)],
+            T_BUDGET: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, t_budget)],
+            T_TYPE: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, t_type)],
+            T_CONTACT: [MessageHandler(
+                filters.CONTACT, t_contact)],
+            T_CONFIRM: [
+                CallbackQueryHandler(
+                    tenant_confirm,
+                    pattern="^tenant_confirm$"),
+                CallbackQueryHandler(
+                    restart_handler, pattern="^restart$")],
+            INT_BUDGET: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, int_budget)],
+            INT_MOVEIN: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, int_movein)],
+            INT_CONTACT: [MessageHandler(
+                filters.CONTACT, int_contact)],
+            INT_CONFIRM: [
+                CallbackQueryHandler(
+                    int_confirm, pattern="^int_confirm$"),
+                CallbackQueryHandler(
+                    restart_handler, pattern="^restart$")],
+            PAY_METHOD: [
+                CallbackQueryHandler(
+                    pay_method, pattern="^paymethod_"),
+                CallbackQueryHandler(
+                    stars_done, pattern="^stars_done_"),
+                CallbackQueryHandler(
+                    upload_shot_prompt,
+                    pattern="^upload_shot$"),
+                CallbackQueryHandler(
+                    restart_handler, pattern="^restart$"),
+            ],
+            PAY_SCREENSHOT: [MessageHandler(
+                filters.PHOTO, pay_screenshot)],
+        },
+        fallbacks=[CommandHandler("start", start)],
+        allow_reentry=True,
+        per_message=False,
+    )
+    app.add_handler(conv)
+    print("Bot running...", flush=True)
+    try:
+        app.run_polling()
+    except Exception as e:
+        print("CRASH:", e, flush=True)
+        traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
