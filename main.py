@@ -1,19 +1,23 @@
 import os
+import sys
+import datetime
 import threading
 import traceback
-import sys
 from http.server import BaseHTTPRequestHandler
 from http.server import HTTPServer
 
 def keep_alive():
     port = int(os.environ.get("PORT", 10000))
+
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"OK")
+
         def log_message(self, *a):
             pass
+
     HTTPServer(("0.0.0.0", port), H).serve_forever()
 
 threading.Thread(
@@ -27,10 +31,12 @@ from telegram import InlineKeyboardMarkup
 from telegram import KeyboardButton
 from telegram import ReplyKeyboardMarkup
 from telegram import ReplyKeyboardRemove
+from telegram import LabeledPrice
 from telegram.ext import ApplicationBuilder
 from telegram.ext import CommandHandler
 from telegram.ext import MessageHandler
 from telegram.ext import CallbackQueryHandler
+from telegram.ext import PreCheckoutQueryHandler
 from telegram.ext import ContextTypes
 from telegram.ext import filters
 from telegram.ext import ConversationHandler
@@ -38,6 +44,8 @@ from telegram.ext import ConversationHandler
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 print("STARTING...", flush=True)
 print("TOKEN LEN:", len(BOT_TOKEN or ""), flush=True)
+print("ADMIN_ID:", os.environ.get("ADMIN_ID"), flush=True)
+
 CHANNEL_ID = -1004386364968
 CHANNEL_LINK = "https://t.me/dubairentonly"
 BOT_LINK = "https://t.me/Dubairentalsbot"
@@ -46,6 +54,8 @@ TRC20 = os.environ.get("TRC20_ADDRESS", "Ask admin")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 PRICE_CONTACT = 10
 PRICE_PIN = 25
+STARS_CONTACT = 150
+STARS_PIN = 375
 
 ROLE = 0
 A_LOC = 1
@@ -78,14 +88,47 @@ leads = []
 pending = {}
 interested = set()
 
+DAILY_TIPS = [
+ "Good morning Dubai. Take your time. The right home is worth waiting for.",
+ "A calm search finds a better home than a rushed search.",
+ "Prepare your documents early. When the right home appears, you will be ready.",
+ "Visit a home in daylight. You will see it clearly.",
+ "Ask questions. A good decision comes from clear information.",
+ "Write down what matters most to you. It makes choosing easier.",
+ "A good home is not only about rooms. It is about how you feel there.",
+ "Be patient with your search. Good things take a little time.",
+ "Keep your search organised. Save the homes you like.",
+ "A short visit today can save you a long regret later.",
+ "Respect makes every rental journey smoother.",
+ "Think about your daily life. Choose a home that fits it.",
+ "Small details matter. Check them before you decide.",
+ "Stay positive. Your next home is closer than you think.",
+ "A clear mind makes a clear choice.",
+ "Do not rush because others are rushing. Move at your pace.",
+ "Good communication avoids most problems.",
+ "Be ready, be calm, be patient. The right home will come.",
+ "Look beyond photos. A visit tells the full story.",
+ "Your comfort matters. Choose a place where you can rest well.",
+ "Plan your search. A plan saves time and stress.",
+ "A new home is a new chapter. Choose it with care.",
+ "Take notes during viewings. Memory fades, notes stay.",
+ "Be kind to agents and landlords. Kindness returns.",
+ "Focus on what you need, not only what you want.",
+ "A quiet evening walk around the area tells you a lot.",
+ "Trust your feeling, but also check the facts.",
+ "Every search teaches you something. Keep learning.",
+ "Start your day with a clear goal. It makes the search easier.",
+ "Your home should support your life, not stress it.",
+]
+
 def help_text():
     t1 = "HELP\n\n"
     t2 = "Agent: Post PROPERTY free.\n"
     t3 = "Verification + Contact on 1st post only.\n\n"
     t4 = "Tenant: Post WANTED free.\n"
     t5 = "Contact at END. Never public.\n\n"
-    t6 = "Contacts: 10 AED each.\n"
-    t7 = "Pin: 25 AED for 24h.\n\n"
+    t6 = "Contacts: 10 AED (150 Stars).\n"
+    t7 = "Pin: 25 AED (375 Stars) for 24h.\n\n"
     t8 = "Channel: @dubairentonly\n"
     t9 = "Admin: @Givon5"
     return t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8 + t9
@@ -98,13 +141,11 @@ def main_kb():
         "Tenant - Post WANTED",
         callback_data="role_tenant")
     b3 = InlineKeyboardButton(
-        "View Channel", url=CHANNEL_LINK)
-    b4 = InlineKeyboardButton(
         "Help", callback_data="help")
-    b5 = InlineKeyboardButton(
-        "Main Menu", callback_data="restart")
+    b4 = InlineKeyboardButton(
+        "Channel", url=CHANNEL_LINK)
     return InlineKeyboardMarkup([
-        [b1], [b2], [b3], [b4], [b5]
+        [b1], [b2], [b3, b4]
     ])
 
 def share_phone_kb():
@@ -127,6 +168,17 @@ def pin_kb(kind, pid):
         "Help", callback_data="help")
     return InlineKeyboardMarkup([[b1], [b2], [b3]])
 
+async def daily_tip_job(context):
+    day = datetime.datetime.now().day
+    tip = DAILY_TIPS[day % len(DAILY_TIPS)]
+    txt = "Daily Thought\n\n" + tip + "\n\n"
+    txt += "Channel: @dubairentonly"
+    try:
+        await context.bot.send_message(
+            CHANNEL_ID, txt)
+    except Exception as e:
+        print("Daily tip fail", e)
+
 async def unpin_after_24h(context):
     mid = context.job.data
     try:
@@ -142,6 +194,13 @@ def schedule_unpin(app, mid):
             when=86400,
             data=mid,
             name="unpin_" + str(mid))
+
+async def on_error(update, context):
+    print("ERROR:", context.error, flush=True)
+    try:
+        traceback.print_exc()
+    except Exception:
+        pass
 
 async def unpin_cmd(update, context):
     uid = str(update.effective_user.id)
@@ -175,6 +234,40 @@ async def id_cmd(update, context):
         update.effective_user.id)
     await update.message.reply_text(txt)
 
+async def menu_cmd(update, context):
+    await update.message.reply_text(
+        "Main Menu\nWhat do you want to do?",
+        reply_markup=main_kb(),
+        parse_mode="Markdown")
+    return ROLE
+
+async def pending_cmd(update, context):
+    uid = str(update.effective_user.id)
+    if ADMIN_ID and uid != str(ADMIN_ID):
+        await update.message.reply_text("Only admin.")
+        return
+    if not pending:
+        await update.message.reply_text(
+            "No waiting payments.")
+        return
+    for pid, p in list(pending.items()):
+        txt = "Pending #" + str(pid) + "\n"
+        txt += "Buyer: " + str(p["buyer"]) + "\n"
+        txt += "Kind: " + str(p["kind"]) + "\n"
+        txt += "Ref: " + str(p["ref"]) + "\n"
+        txt += "Amount: " + str(p["price"]) + " AED"
+        cb1 = "admin_approve_" + str(pid)
+        cb2 = "admin_reject_" + str(pid)
+        b1 = InlineKeyboardButton(
+            "Approve #" + str(pid),
+            callback_data=cb1)
+        b2 = InlineKeyboardButton(
+            "Reject #" + str(pid),
+            callback_data=cb2)
+        kb = InlineKeyboardMarkup([[b1], [b2]])
+        await update.message.reply_text(
+            txt, reply_markup=kb)
+
 async def start(update, context):
     args = context.args or []
     if args and args[0].startswith("interested_"):
@@ -187,7 +280,8 @@ async def start(update, context):
     txt += "Posting FREE. Contacts 10 AED.\n"
     txt += "Pin 25 AED (24h).\n\nWho are you?"
     await update.message.reply_text(
-        txt, reply_markup=main_kb(), parse_mode="Markdown")
+        txt, reply_markup=main_kb(),
+        parse_mode="Markdown")
     return ROLE
 
 async def restart_handler(update, context):
@@ -195,7 +289,7 @@ async def restart_handler(update, context):
     await q.answer()
     context.user_data.clear()
     await q.edit_message_text(
-        "Main Menu\nWho are you?",
+        "Main Menu\nWhat do you want to do?",
         reply_markup=main_kb(),
         parse_mode="Markdown")
     return ROLE
@@ -413,13 +507,10 @@ async def agent_confirm(update, context):
     url1 = BOT_LINK + "?start=interested_" + str(pid)
     b1 = InlineKeyboardButton(
         "I am Interested", url=url1)
-    b2 = InlineKeyboardButton(
-        "Share",
-        switch_inline_query="Property in " + str(
-            d.get("location")))
     b3 = InlineKeyboardButton(
         "Channel", url=CHANNEL_LINK)
-    kb = InlineKeyboardMarkup([[b1], [b2], [b3]])
+    kb = InlineKeyboardMarkup([[b1], [b3]])
+    posted = False
     try:
         if d.get("photos"):
             msg = await context.bot.send_photo(
@@ -431,8 +522,19 @@ async def agent_confirm(update, context):
                 CHANNEL_ID, cap, reply_markup=kb,
                 parse_mode="Markdown")
         post["channel_msg_id"] = msg.message_id
+        posted = True
     except Exception as e:
         print("Channel post fail", e)
+        posted = False
+    if not posted:
+        await q.edit_message_text(
+            "Saved, but NOT posted to channel!\n"
+            "Bot is NOT admin in @dubairentonly.\n"
+            "Add bot as Admin, then post again.",
+            reply_markup=main_kb(),
+            parse_mode="Markdown")
+        context.user_data.clear()
+        return ROLE
     await q.edit_message_text(
         "Posted to @dubairentonly!\n"
         "No contact posted publicly.\n\n"
@@ -518,20 +620,28 @@ async def tenant_confirm(update, context):
     url1 = BOT_LINK + "?start=wanted_" + str(pid)
     b1 = InlineKeyboardButton(
         "Get Tenant Contact - 10 AED", url=url1)
-    b2 = InlineKeyboardButton(
-        "Share",
-        switch_inline_query="Wanted in " + str(
-            d.get("location")))
     b3 = InlineKeyboardButton(
         "Channel", url=CHANNEL_LINK)
-    kb = InlineKeyboardMarkup([[b1], [b2], [b3]])
+    kb = InlineKeyboardMarkup([[b1], [b3]])
+    posted = False
     try:
         msg = await context.bot.send_message(
             CHANNEL_ID, cap, reply_markup=kb,
             parse_mode="Markdown")
         post["channel_msg_id"] = msg.message_id
+        posted = True
     except Exception as e:
         print("Channel post fail", e)
+        posted = False
+    if not posted:
+        await q.edit_message_text(
+            "Saved, but NOT posted to channel!\n"
+            "Bot is NOT admin in @dubairentonly.\n"
+            "Add bot as Admin, then post again.",
+            reply_markup=main_kb(),
+            parse_mode="Markdown")
+        context.user_data.clear()
+        return ROLE
     await q.edit_message_text(
         "Posted to @dubairentonly!\n"
         "No contact posted publicly.\n\n"
@@ -731,8 +841,12 @@ def pay_kb(kind, ref_id, price):
         "Binance ID", callback_data=base1)
     b2 = InlineKeyboardButton(
         "TRC20 USDT", callback_data=base2)
+    if price == PRICE_PIN:
+        star_txt = "Telegram Stars - 375 Stars"
+    else:
+        star_txt = "Telegram Stars - 150 Stars"
     b3 = InlineKeyboardButton(
-        "Telegram Stars (Auto)", callback_data=base3)
+        star_txt, callback_data=base3)
     b4 = InlineKeyboardButton(
         "Cancel", callback_data="restart")
     return InlineKeyboardMarkup(
@@ -766,6 +880,32 @@ async def pin_start(update, context):
         parse_mode="Markdown")
     return PAY_METHOD
 
+async def send_stars_invoice(update, context, kind, ref, price):
+    q = update.callback_query
+    chat_id = q.from_user.id
+    if price == PRICE_PIN:
+        stars = STARS_PIN
+        title = "Pin Post 24h - 25 AED"
+        desc = "Pin your post on top for 24h"
+    else:
+        stars = STARS_CONTACT
+        title = "Unlock Contact - 10 AED"
+        desc = "Unlock one contact"
+    payload = "stars_" + kind + "_" + str(ref)
+    prices = [LabeledPrice(title, stars)]
+    await context.bot.send_invoice(
+        chat_id, title, desc, payload,
+        provider_token="",
+        currency="XTR",
+        prices=prices)
+    await q.edit_message_text(
+        "Stars invoice sent.\n"
+        "Tap PAY above to pay with Stars.\n"
+        "Telegram will confirm automatically\n"
+        "after you pay.",
+        parse_mode="Markdown")
+    return PAY_METHOD
+
 async def pay_method(update, context):
     q = update.callback_query
     await q.answer()
@@ -779,18 +919,8 @@ async def pay_method(update, context):
     context.user_data["pay_method"] = method
     context.user_data["pay_price"] = price
     if method == "stars":
-        cb = "stars_done_" + kind
-        cb += "_" + str(ref) + "_" + str(price)
-        b = InlineKeyboardButton(
-            "Confirm Stars Paid",
-            callback_data=cb)
-        kb = InlineKeyboardMarkup([[b]])
-        await q.edit_message_text(
-            "Telegram Stars - " + str(price) + " AED\n\n"
-            "Tap Confirm.",
-            reply_markup=kb,
-            parse_mode="Markdown")
-        return PAY_METHOD
+        return await send_stars_invoice(
+            update, context, kind, ref, price)
     if method == "binance":
         txt = "Binance Pay - " + str(price) + " AED\n\n"
         txt += "Send " + str(price) + " AED to:\n"
@@ -817,7 +947,12 @@ async def upload_shot_prompt(update, context):
     return PAY_SCREENSHOT
 
 async def pay_screenshot(update, context):
-    if not update.message.photo:
+    file_id = None
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+    elif update.message.document:
+        file_id = update.message.document.file_id
+    else:
         await update.message.reply_text(
             "Send screenshot as photo.")
         return PAY_SCREENSHOT
@@ -832,44 +967,64 @@ async def pay_screenshot(update, context):
     np["buyer"] = uid
     np["price"] = price
     pending[pid] = np
-    if ADMIN_ID:
-        try:
-            cap = "New Payment\n"
-            cap += "Buyer: " + str(uid) + "\n"
-            cap += "Kind: " + str(kind) + "\n"
-            cap += "Ref: " + str(ref) + "\n"
-            cap += "Amount: " + str(price) + " AED\n"
-            cap += "Method: "
-            cap += str(context.user_data.get("pay_method"))
-            cb1 = "admin_approve_" + str(pid)
-            cb2 = "admin_reject_" + str(pid)
-            b1 = InlineKeyboardButton(
-                "Approve", callback_data=cb1)
-            b2 = InlineKeyboardButton(
-                "Reject", callback_data=cb2)
-            kb = InlineKeyboardMarkup([[b1], [b2]])
-            await context.bot.send_photo(
-                int(ADMIN_ID),
-                update.message.photo[-1].file_id,
-                caption=cap,
-                reply_markup=kb,
-                parse_mode="Markdown")
-        except Exception as e:
-            print("Admin forward fail", e)
+    if not ADMIN_ID:
+        print("No ADMIN_ID set, cannot forward")
+        await update.message.reply_text(
+            "PENDING - But ADMIN_ID not set!\n"
+            "Tell admin to set ADMIN_ID in Render.",
+            parse_mode="Markdown")
+        return ROLE
+    try:
+        cap = "New Payment #" + str(pid) + "\n"
+        cap += "Buyer: " + str(uid) + "\n"
+        cap += "Kind: " + str(kind) + "\n"
+        cap += "Ref: " + str(ref) + "\n"
+        cap += "Amount: " + str(price) + " AED\n"
+        cap += "Method: "
+        cap += str(context.user_data.get("pay_method"))
+        cb1 = "admin_approve_" + str(pid)
+        cb2 = "admin_reject_" + str(pid)
+        b1 = InlineKeyboardButton(
+            "Approve", callback_data=cb1)
+        b2 = InlineKeyboardButton(
+            "Reject", callback_data=cb2)
+        kb = InlineKeyboardMarkup([[b1], [b2]])
+        await context.bot.send_photo(
+            int(ADMIN_ID), file_id,
+            caption=cap,
+            reply_markup=kb,
+            parse_mode="Markdown")
+        print("Forwarded to admin", ADMIN_ID)
+    except Exception as e:
+        print("Admin forward fail", e)
+        await update.message.reply_text(
+            "PENDING - Admin forward failed: "
+            + str(e) + "\nAdmin must send /start "
+            "to bot first, then send /pending.",
+            parse_mode="Markdown")
+        return ROLE
     await update.message.reply_text(
         "PENDING - Waiting for Admin Approval\n\n"
         "Screenshot sent to admin.",
         parse_mode="Markdown")
     return ROLE
 
-async def stars_done(update, context):
-    q = update.callback_query
-    await q.answer()
-    parts = q.data.split("_")
-    price = int(parts[-1])
-    ref = int(parts[-2])
-    kind = "_".join(parts[2:-2])
-    await deliver_payment(q, context, kind, ref, price)
+async def precheckout(update, context):
+    q = update.pre_checkout_query
+    await q.answer(ok=True)
+
+async def successful_payment(update, context):
+    pay = update.message.successful_payment
+    payload = pay.invoice_payload
+    parts = payload.split("_")
+    kind = "_".join(parts[1:-1])
+    ref = int(parts[-1])
+    buyer = update.effective_user.id
+    price = PRICE_PIN
+    if kind in ["lead", "agent", "wanted"]:
+        price = PRICE_CONTACT
+    await deliver_to_buyer(
+        context, buyer, kind, ref, price)
     return ROLE
 
 async def admin_decision(update, context):
@@ -919,73 +1074,51 @@ async def deliver_to_buyer(context, buyer, kind, ref, price):
         posts = agent_posts
         if pk != "agent":
             posts = tenant_posts
-        if ref < len(posts):
-            mid = posts[ref].get("channel_msg_id")
-            try:
-                if mid:
-                    await context.bot.pin_chat_message(
-                        CHANNEL_ID, mid,
-                        disable_notification=True)
-                    schedule_unpin(
-                        context.application, mid)
-                    await context.bot.send_message(
-                        buyer,
-                        "Payment Approved!\n\n"
-                        "Your post is PINNED for 24h.\n"
-                        "Then auto-unpin.",
-                        parse_mode="Markdown")
-                else:
-                    await context.bot.send_message(
-                        buyer,
-                        "Approved, but post not found.",
-                        parse_mode="Markdown")
-            except Exception as e:
-                await context.bot.send_message(
-                    buyer,
-                    "Approved, but pin failed: " + str(e),
-                    parse_mode="Markdown")
+        if ref >= len(posts):
+            await context.bot.send_message(
+                buyer,
+                "Payment received, but post not found.\n"
+                "It was deleted after restart.\n"
+                "Contact admin @Givon5 for refund.",
+                parse_mode="Markdown")
+            return
+        mid = posts[ref].get("channel_msg_id")
+        if not mid:
+            await context.bot.send_message(
+                buyer,
+                "Payment received, but post was never\n"
+                "posted to channel. Bot is not admin.\n"
+                "Contact admin @Givon5 for refund.",
+                parse_mode="Markdown")
+            return
+        try:
+            await context.bot.pin_chat_message(
+                CHANNEL_ID, mid,
+                disable_notification=True)
+            schedule_unpin(
+                context.application, mid)
+            await context.bot.send_message(
+                buyer,
+                "Payment Approved!\n\n"
+                "Your post is PINNED for 24h.\n"
+                "Then auto-unpin.\n\n"
+                "What next?",
+                reply_markup=main_kb(),
+                parse_mode="Markdown")
+        except Exception as e:
+            await context.bot.send_message(
+                buyer,
+                "Approved, but pin failed: " + str(e)
+                + "\nBot must be admin with Pin rights.",
+                reply_markup=main_kb(),
+                parse_mode="Markdown")
         return
     contact = get_contact_for(kind, ref)
     await context.bot.send_message(
         buyer,
         "Payment Approved!\n\n"
-        "Here is contact:\n" + str(contact),
-        parse_mode="Markdown")
-
-async def deliver_payment(q, context, kind, ref, price):
-    if kind.startswith("pin_"):
-        pk = kind.split("_")[1]
-        posts = agent_posts
-        if pk != "agent":
-            posts = tenant_posts
-        if ref < len(posts):
-            mid = posts[ref].get("channel_msg_id")
-            try:
-                if mid:
-                    await context.bot.pin_chat_message(
-                        CHANNEL_ID, mid,
-                        disable_notification=True)
-                    schedule_unpin(
-                        context.application, mid)
-                    await q.edit_message_text(
-                        "Payment Confirmed (Stars)!\n\n"
-                        "Your post is PINNED for 24h.",
-                        reply_markup=main_kb(),
-                        parse_mode="Markdown")
-                else:
-                    await q.edit_message_text(
-                        "Payment Confirmed, post not found.",
-                        reply_markup=main_kb())
-            except Exception as e:
-                await q.edit_message_text(
-                    "Payment Confirmed, pin failed: "
-                    + str(e),
-                    reply_markup=main_kb())
-        return
-    contact = get_contact_for(kind, ref)
-    await q.edit_message_text(
-        "Payment Confirmed (Stars)!\n\n"
-        "Contact:\n" + str(contact),
+        "Here is contact:\n" + str(contact)
+        + "\n\nWhat next?",
         reply_markup=main_kb(),
         parse_mode="Markdown")
 
@@ -995,7 +1128,17 @@ def main():
         CallbackQueryHandler(help_handler, pattern="^help$"))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("id", id_cmd))
+    app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("unpin", unpin_cmd))
+    app.add_handler(CommandHandler("pending", pending_cmd))
+    app.add_handler(
+        CallbackQueryHandler(
+            admin_decision, pattern="^admin_"))
+    app.add_handler(
+        PreCheckoutQueryHandler(precheckout))
+    app.add_handler(MessageHandler(
+        filters.SUCCESSFUL_PAYMENT,
+        successful_payment))
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -1016,10 +1159,6 @@ def main():
                     pattern="^pin_(agent|tenant)_"),
                 CallbackQueryHandler(
                     pay_method, pattern="^paymethod_"),
-                CallbackQueryHandler(
-                    admin_decision, pattern="^admin_"),
-                CallbackQueryHandler(
-                    stars_done, pattern="^stars_done_"),
                 CallbackQueryHandler(
                     agent_confirm,
                     pattern="^agent_confirm$"),
@@ -1085,21 +1224,26 @@ def main():
                 CallbackQueryHandler(
                     pay_method, pattern="^paymethod_"),
                 CallbackQueryHandler(
-                    stars_done, pattern="^stars_done_"),
-                CallbackQueryHandler(
                     upload_shot_prompt,
                     pattern="^upload_shot$"),
                 CallbackQueryHandler(
                     restart_handler, pattern="^restart$"),
             ],
             PAY_SCREENSHOT: [MessageHandler(
-                filters.PHOTO, pay_screenshot)],
+                filters.PHOTO | filters.Document.IMAGE,
+                pay_screenshot)],
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
         per_message=False,
     )
     app.add_handler(conv)
+    app.add_error_handler(on_error)
+    if app.job_queue:
+        app.job_queue.run_daily(
+            daily_tip_job,
+            time=datetime.time(hour=5, minute=0),
+            name="daily_tip")
     print("Bot running...", flush=True)
     try:
         app.run_polling()
