@@ -53,10 +53,8 @@ CHANNEL_LINK = "https://t.me/dubairentonly"
 BOT_LINK = "https://t.me/Dubairentalsbot"
 ADMIN_ID = os.environ.get("ADMIN_ID")
 ADMIN_USERNAME = "@Givon5"
-PRICE_CONTACT = 10
-PRICE_PIN = 25
-STARS_CONTACT = 150
-STARS_PIN = 375
+STARS_CONTACT = 200
+STARS_PIN = 400
 
 ROLE = 0
 A_LOC = 1
@@ -198,8 +196,8 @@ def help_text():
     t3 = "Verification + Contact on 1st post only.\n\n"
     t4 = "Tenant: Post WANTED free.\n"
     t5 = "Contact at END. Never public.\n\n"
-    t6 = "Contacts: 10 AED (150 Stars).\n"
-    t7 = "Pin: 25 AED (375 Stars) for 24h.\n\n"
+    t6 = "Contacts: 200 Stars.\n"
+    t7 = "Pin: 400 Stars for 24h.\n\n"
     t8 = "Payment: Telegram Stars ONLY.\n"
     t9 = "Fast & automatic. No screenshot.\n"
     t10 = "Pay with Stars, get contact instantly.\n\n"
@@ -241,7 +239,7 @@ def share_phone_kb():
 def pin_kb(kind, pid):
     cb = "pin_" + kind + "_" + str(pid)
     b1 = InlineKeyboardButton(
-        "Pin This Post - 25 AED (24h)",
+        "Pin This Post - 400 Stars (24h)",
         callback_data=cb)
     b2 = InlineKeyboardButton(
         "Main Menu", callback_data="restart")
@@ -333,8 +331,8 @@ async def start(update, context):
         return await show_wanted(update, context, pid)
     context.user_data.clear()
     txt = "Welcome to Dubai Rentals!\n"
-    txt += "Posting FREE. Contacts 10 AED.\n"
-    txt += "Pin 25 AED (24h).\n\nWho are you?"
+    txt += "Posting FREE. Contacts 200 Stars.\n"
+    txt += "Pin 400 Stars (24h).\n\nWho are you?"
     await update.message.reply_text(
         txt, reply_markup=main_kb(),
         parse_mode="Markdown")
@@ -388,7 +386,7 @@ async def a_loc(update, context):
     context.user_data["draft"]["location"] = \
         update.message.text
     await update.message.reply_text(
-        "Step 2: Rent? (e.g. 6000 AED/month)")
+        "Step 2: Rent? (e.g. 6000/month)")
     return A_RENT
 
 async def a_rent(update, context):
@@ -486,7 +484,7 @@ async def a_check_contact(update, context):
     await update.message.reply_text(
         "Final Step - Your Contact\n"
         "Never in channel post. Only for\n"
-        "tenants who pay 10 AED.\n"
+        "tenants who pay 200 Stars.\n"
         "Please share contact:",
         reply_markup=share_phone_kb(),
         parse_mode="Markdown")
@@ -636,7 +634,7 @@ async def agent_confirm(update, context):
     await q.edit_message_text(
         "Posted to @dubairentonly!\n"
         "No contact posted publicly.\n\n"
-        "Want to pin it for 25 AED (24h)?",
+        "Want to pin it for 400 Stars (24h)?",
         reply_markup=pin_kb("agent", pid),
         parse_mode="Markdown")
     context.user_data.clear()
@@ -646,7 +644,7 @@ async def t_loc(update, context):
     context.user_data["draft"]["location"] = \
         update.message.text
     await update.message.reply_text(
-        "Step 2: Budget? (e.g. 5000 AED/month)")
+        "Step 2: Budget? (e.g. 5000/month)")
     return T_BUDGET
 
 async def t_budget(update, context):
@@ -662,7 +660,7 @@ async def t_type(update, context):
     await update.message.reply_text(
         "Last Step - Your Contact\n"
         "SAFE. Never posted publicly.\n"
-        "Only for agents who pay 10 AED.\n"
+        "Only for agents who pay 200 Stars.\n"
         "Please share contact:",
         reply_markup=share_phone_kb(),
         parse_mode="Markdown")
@@ -745,10 +743,10 @@ async def tenant_confirm(update, context):
     cap += "Wanted: " + str(d.get("location")) + "\n"
     cap += "Budget: " + str(d.get("budget")) + "\n"
     cap += "Type: " + str(d.get("type")) + "\n\n"
-    cap += "Agents: Tap to get contact (10 AED)"
+    cap += "Agents: Tap to get contact (200 Stars)"
     url1 = BOT_LINK + "?start=wanted_" + str(pid)
     b1 = InlineKeyboardButton(
-        "Get Tenant Contact - 10 AED", url=url1)
+        "Get Tenant Contact - 200 Stars", url=url1)
     b3 = InlineKeyboardButton(
         "Channel", url=CHANNEL_LINK)
     kb = InlineKeyboardMarkup([[b1], [b3]])
@@ -775,7 +773,7 @@ async def tenant_confirm(update, context):
     await q.edit_message_text(
         "Posted to @dubairentonly!\n"
         "No contact posted publicly.\n\n"
-        "Want to pin it for 25 AED (24h)?",
+        "Want to pin it for 400 Stars (24h)?",
         reply_markup=pin_kb("tenant", pid),
         parse_mode="Markdown")
     context.user_data.clear()
@@ -841,7 +839,7 @@ async def int_movein(update, context):
     await update.message.reply_text(
         "Your Contact\n"
         "Give number so Agent can contact you.\n"
-        "NOT public. Only Agent after paying 10 AED.",
+        "NOT public. Only Agent after paying 200 Stars.",
         reply_markup=share_phone_kb(),
         parse_mode="Markdown")
     return INT_CONTACT
@@ -931,7 +929,7 @@ async def int_confirm(update, context):
     save_data()
     cb1 = "pay_lead_" + str(lead_id)
     b1 = InlineKeyboardButton(
-        "Pay 10 AED to Unlock Contact",
+        "Pay 200 Stars to Unlock Contact",
         callback_data=cb1)
     b2 = InlineKeyboardButton(
         "Help", callback_data="help")
@@ -944,7 +942,7 @@ async def int_confirm(update, context):
         m += str(context.user_data.get("lead_budget")) + "\n"
         m += "Move-in: "
         m += str(context.user_data.get("lead_movein")) + "\n"
-        m += "Contact: HIDDEN - Pay 10 AED to unlock"
+        m += "Contact: HIDDEN - Pay 200 Stars to unlock"
         await context.bot.send_message(
             p["owner"], m,
             reply_markup=agent_kb,
@@ -953,7 +951,7 @@ async def int_confirm(update, context):
         print("Agent DM fail", e)
     cb2 = "pay_agent_" + str(lead_id)
     b3 = InlineKeyboardButton(
-        "Get Agent Contact - 10 AED",
+        "Get Agent Contact - 200 Stars",
         callback_data=cb2)
     b4 = InlineKeyboardButton(
         "Let Agent Contact Me",
@@ -966,7 +964,7 @@ async def int_confirm(update, context):
         "Sent to Agent!\n"
         "Agent got Budget + Move-in,\n"
         "but NOT your contact yet.\n"
-        "He must pay 10 AED to see it.\n\n"
+        "He must pay 200 Stars to see it.\n\n"
         "Do you want Agent contact now?",
         reply_markup=tenant_kb,
         parse_mode="Markdown")
@@ -986,10 +984,10 @@ async def show_wanted(update, context, pid):
     txt += "Location: " + str(p.get("location")) + "\n"
     txt += "Budget: " + str(p.get("budget")) + "\n"
     txt += "Type: " + str(p.get("type")) + "\n\n"
-    txt += "Get Tenant contact for 10 AED?"
+    txt += "Get Tenant contact for 200 Stars?"
     cb = "pay_wanted_" + str(pid)
     b1 = InlineKeyboardButton(
-        "Pay 10 AED - Get Contact",
+        "Pay 200 Stars - Get Contact",
         callback_data=cb)
     b2 = InlineKeyboardButton(
         "No", callback_data="restart")
@@ -998,13 +996,13 @@ async def show_wanted(update, context, pid):
         txt, reply_markup=kb, parse_mode="Markdown")
     return ROLE
 
-def pay_kb(kind, ref_id, price):
+def pay_kb(kind, ref, price):
     base3 = "paymethod_stars_" + kind
-    base3 += "_" + str(ref_id) + "_" + str(price)
-    if price == PRICE_PIN:
-        star_txt = "Pay with Stars - 375 Stars"
+    base3 += "_" + str(ref) + "_" + str(price)
+    if price == STARS_PIN:
+        star_txt = "Pay with Stars - 400 Stars"
     else:
-        star_txt = "Pay with Stars - 150 Stars"
+        star_txt = "Pay with Stars - 200 Stars"
     b3 = InlineKeyboardButton(
         star_txt, callback_data=base3)
     b4 = InlineKeyboardButton(
@@ -1019,10 +1017,10 @@ async def pay_start(update, context):
     kind = parts[1]
     ref = int(parts[2])
     await q.edit_message_text(
-        "Pay 10 AED to Unlock Contact\n\n"
+        "Pay 200 Stars to Unlock Contact\n\n"
         "Payment: Telegram Stars ONLY.\n"
         "Fast & automatic.",
-        reply_markup=pay_kb(kind, ref, PRICE_CONTACT),
+        reply_markup=pay_kb(kind, ref, STARS_CONTACT),
         parse_mode="Markdown")
     return PAY_METHOD
 
@@ -1033,24 +1031,24 @@ async def pin_start(update, context):
     kind = "pin_" + parts[1]
     ref = int(parts[2])
     await q.edit_message_text(
-        "Pin This Post - 25 AED (24h)\n\n"
+        "Pin This Post - 400 Stars (24h)\n\n"
         "Your post stays on top for 24h,\n"
         "then auto-unpin.\n\n"
         "Payment: Telegram Stars ONLY.",
-        reply_markup=pay_kb(kind, ref, PRICE_PIN),
+        reply_markup=pay_kb(kind, ref, STARS_PIN),
         parse_mode="Markdown")
     return PAY_METHOD
 
 async def send_stars_invoice(update, context, kind, ref, price):
     q = update.callback_query
     chat_id = q.from_user.id
-    if price == PRICE_PIN:
+    if price == STARS_PIN:
         stars = STARS_PIN
-        title = "Pin Post 24h - 25 AED"
+        title = "Pin Post 24h - 400 Stars"
         desc = "Pin your post on top for 24h"
     else:
         stars = STARS_CONTACT
-        title = "Unlock Contact - 10 AED"
+        title = "Unlock Contact - 200 Stars"
         desc = "Unlock one contact"
     payload = "stars_" + kind + "_" + str(ref)
     prices = [LabeledPrice(title, stars)]
@@ -1088,9 +1086,9 @@ async def successful_payment(update, context):
     kind = "_".join(parts[1:-1])
     ref = int(parts[-1])
     buyer = update.effective_user.id
-    price = PRICE_PIN
+    price = STARS_PIN
     if kind in ["lead", "agent", "wanted"]:
-        price = PRICE_CONTACT
+        price = STARS_CONTACT
     context.user_data.clear()
     await deliver_to_buyer(
         context, buyer, kind, ref, price)
