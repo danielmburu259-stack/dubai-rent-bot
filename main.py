@@ -1,29 +1,48 @@
-import os, threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import os
+import threading
+from http.server import BaseHTTPRequestHandler
+from http.server import HTTPServer
 
 def keep_alive():
     port = int(os.environ.get("PORT", 10000))
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
-        def log_message(self, *a): pass
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        def log_message(self, *a):
+            pass
     HTTPServer(("0.0.0.0", port), H).serve_forever()
-threading.Thread(target=keep_alive, daemon=True).start()
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters, ConversationHandler
+threading.Thread(
+    target=keep_alive,
+    daemon=True
+).start()
+
+from telegram import Update
+from telegram import InlineKeyboardButton
+from telegram import InlineKeyboardMarkup
+from telegram import KeyboardButton
+from telegram import ReplyKeyboardMarkup
+from telegram import ReplyKeyboardRemove
+from telegram.ext import ApplicationBuilder
+from telegram.ext import CommandHandler
+from telegram.ext import MessageHandler
+from telegram.ext import CallbackQueryHandler
+from telegram.ext import ContextTypes
+from telegram.ext import filters
+from telegram.ext import ConversationHandler
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = -1004386364968
 CHANNEL_LINK = "https://t.me/dubairentonly"
 BOT_LINK = "https://t.me/Dubairentalsbot"
 BINANCE_ID = os.environ.get("BINANCE_ID", "Ask admin")
-TRC20 = os.environ.get("TRC20_ADDRESS", os.environ.get("TRC20", "Ask admin"))
+TRC20 = os.environ.get("TRC20_ADDRESS", "Ask admin")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 PRICE_CONTACT = 10
 PRICE_PIN = 25
 
-# FIXED: 23 states, so range(23) - not 26
 ROLE = 0
 A_LOC = 1
 A_RENT = 2
@@ -56,202 +75,309 @@ pending = {}
 interested = set()
 
 def help_text():
-    return ("❓ HELP\n\nAgent: Post PROPERTY free. Verification + Contact only on 1st post, at the END.\n\nTenant: Post WANTED free. Contact at the END via Share button. Never posted publicly.\n\nContacts: 10 AED per contact. Agent pays to get Tenant contact. Tenant can pay 10 AED to get Agent contact.\n\nPinned Post: 25 AED - Pinned on top of @dubairentonly for 24 hours, then auto-unpinned.\n\nChannel: @dubairentonly\nAdmin: @Givon5")
+    t1 = "HELP\n\n"
+    t2 = "Agent: Post PROPERTY free.\n"
+    t3 = "Verification + Contact on 1st post only.\n\n"
+    t4 = "Tenant: Post WANTED free.\n"
+    t5 = "Contact at END. Never public.\n\n"
+    t6 = "Contacts: 10 AED each.\n"
+    t7 = "Pin: 25 AED for 24h.\n\n"
+    t8 = "Channel: @dubairentonly\n"
+    t9 = "Admin: @Givon5"
+    return t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8 + t9
 
 def main_kb():
+    b1 = InlineKeyboardButton(
+        "Agent - Post PROPERTY",
+        callback_data="role_agent")
+    b2 = InlineKeyboardButton(
+        "Tenant - Post WANTED",
+        callback_data="role_tenant")
+    b3 = InlineKeyboardButton(
+        "View Channel", url=CHANNEL_LINK)
+    b4 = InlineKeyboardButton(
+        "Help", callback_data="help")
+    b5 = InlineKeyboardButton(
+        "Main Menu", callback_data="restart")
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🕵️ I'm an Agent - Post PROPERTY", callback_data="role_agent")],
-        [InlineKeyboardButton("🏠 I'm a Tenant - Post WANTED", callback_data="role_tenant")],
-        [InlineKeyboardButton("📢 View Channel", url=CHANNEL_LINK)],
-        [InlineKeyboardButton("❓ Help", callback_data="help")],
-        [InlineKeyboardButton("🔄 Post Again / Main Menu", callback_data="restart")],
+        [b1], [b2], [b3], [b4], [b5]
     ])
 
 def share_phone_kb():
-    return ReplyKeyboardMarkup([[KeyboardButton("📱 Share My Contact", request_contact=True)]], one_time_keyboard=True, resize_keyboard=True)
+    b = KeyboardButton(
+        "Share My Contact",
+        request_contact=True)
+    return ReplyKeyboardMarkup(
+        [[b]],
+        one_time_keyboard=True,
+        resize_keyboard=True)
 
-def pin_kb(post_kind, post_id):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📌 Pin This Post - 25 AED (24h)", callback_data="pin_" + post_kind + "_" + str(post_id))],
-        [InlineKeyboardButton("🔄 Main Menu", callback_data="restart")],
-        [InlineKeyboardButton("❓ Help", callback_data="help")],
-    ])
+def pin_kb(kind, pid):
+    cb = "pin_" + kind + "_" + str(pid)
+    b1 = InlineKeyboardButton(
+        "Pin This Post - 25 AED (24h)",
+        callback_data=cb)
+    b2 = InlineKeyboardButton(
+        "Main Menu", callback_data="restart")
+    b3 = InlineKeyboardButton(
+        "Help", callback_data="help")
+    return InlineKeyboardMarkup([[b1], [b2], [b3]])
 
-async def unpin_after_24h(context: ContextTypes.DEFAULT_TYPE):
-    msg_id = context.job.data
+async def unpin_after_24h(context):
+    mid = context.job.data
     try:
-        await context.bot.unpin_chat_message(CHANNEL_ID, msg_id)
-        print("Auto-unpinned after 24h")
+        await context.bot.unpin_chat_message(
+            CHANNEL_ID, mid)
     except Exception as e:
-        print("Auto-unpin failed:", e)
+        print("Unpin fail", e)
 
-def schedule_unpin(app, msg_id):
+def schedule_unpin(app, mid):
     if app.job_queue:
-        app.job_queue.run_once(unpin_after_24h, when=86400, data=msg_id, name="unpin_" + str(msg_id))
+        app.job_queue.run_once(
+            unpin_after_24h,
+            when=86400,
+            data=mid,
+            name="unpin_" + str(mid))
 
-async def unpin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def unpin_cmd(update, context):
     uid = str(update.effective_user.id)
     if ADMIN_ID and uid != str(ADMIN_ID):
-        await update.message.reply_text("❌ Only admin can unpin.")
+        await update.message.reply_text(
+            "Only admin can unpin.")
         return
     args = context.args or []
     try:
         if args and args[0].lower() == "all":
-            await context.bot.unpin_all_chat_messages(CHANNEL_ID)
-            await update.message.reply_text("✅ All pinned posts unpinned.")
+            await context.bot.unpin_all_chat_messages(
+                CHANNEL_ID)
+            await update.message.reply_text(
+                "All unpinned.")
             return
         if args:
-            msg_id = int(args[0])
-            await context.bot.unpin_chat_message(CHANNEL_ID, msg_id)
-            await update.message.reply_text("✅ Unpinned message " + str(msg_id))
+            mid = int(args[0])
+            await context.bot.unpin_chat_message(
+                CHANNEL_ID, mid)
+            await update.message.reply_text("Unpinned.")
             return
-        await context.bot.unpin_all_chat_messages(CHANNEL_ID)
-        await update.message.reply_text("✅ Unpinned. Usage: /unpin <message_id> or /unpin all")
+        await context.bot.unpin_all_chat_messages(
+            CHANNEL_ID)
+        await update.message.reply_text("Unpinned.")
     except Exception as e:
-        await update.message.reply_text("Pin failed - is bot admin with Pin permission? Error: " + str(e))
+        await update.message.reply_text(
+            "Pin fail: " + str(e))
 
-async def id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Your ID: " + str(update.effective_user.id) + "\nIf you are admin, put this number in Render as ADMIN_ID.")
+async def id_cmd(update, context):
+    txt = "Your ID: " + str(
+        update.effective_user.id)
+    await update.message.reply_text(txt)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update, context):
     args = context.args or []
     if args and args[0].startswith("interested_"):
-        return await show_agent_post_in_dm(update, context, int(args[0].split("_")[1]))
+        pid = int(args[0].split("_")[1])
+        return await show_agent_post(update, context, pid)
     if args and args[0].startswith("wanted_"):
-        return await show_wanted_in_dm(update, context, int(args[0].split("_")[1]))
-    await update.message.reply_text("👋 Welcome to Dubai Rentals!\n\nPosting is FREE. Contacts 10 AED. Pinned Post 25 AED (24h).\n\nWho are you?", reply_markup=main_kb(), parse_mode="Markdown")
+        pid = int(args[0].split("_")[1])
+        return await show_wanted(update, context, pid)
+    txt = "Welcome to Dubai Rentals!\n"
+    txt += "Posting FREE. Contacts 10 AED.\n"
+    txt += "Pin 25 AED (24h).\n\nWho are you?"
+    await update.message.reply_text(
+        txt, reply_markup=main_kb(), parse_mode="Markdown")
     return ROLE
 
-async def restart_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def restart_handler(update, context):
     q = update.callback_query
     await q.answer()
     context.user_data.clear()
-    await q.edit_message_text("🔄 Main Menu\nWho are you?", reply_markup=main_kb(), parse_mode="Markdown")
+    await q.edit_message_text(
+        "Main Menu\nWho are you?",
+        reply_markup=main_kb(),
+        parse_mode="Markdown")
     return ROLE
 
-async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_handler(update, context):
     q = update.callback_query
     await q.answer()
-    await q.edit_message_text(help_text(), reply_markup=main_kb(), parse_mode="Markdown")
+    await q.edit_message_text(
+        help_text(),
+        reply_markup=main_kb(),
+        parse_mode="Markdown")
     return ROLE
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(help_text(), reply_markup=main_kb(), parse_mode="Markdown")
+async def help_cmd(update, context):
+    await update.message.reply_text(
+        help_text(),
+        reply_markup=main_kb(),
+        parse_mode="Markdown")
     return ROLE
 
-async def role_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def role_handler(update, context):
     q = update.callback_query
     await q.answer()
     if q.data == "role_agent":
         context.user_data["role"] = "agent"
         context.user_data["draft"] = {}
-        await q.edit_message_text("🕵️ AGENT - PROPERTY Post\n\nStep 1: Location? (e.g. Marina, Downtown)", parse_mode="Markdown")
+        await q.edit_message_text(
+            "AGENT - PROPERTY\n\nStep 1: Location?",
+            parse_mode="Markdown")
         return A_LOC
-    else:
-        context.user_data["role"] = "tenant"
-        context.user_data["draft"] = {}
-        await q.edit_message_text("🏠 TENANT - WANTED Post\n\nStep 1: Location you want? (e.g. JLT, Marina)", parse_mode="Markdown")
-        return T_LOC
+    context.user_data["role"] = "tenant"
+    context.user_data["draft"] = {}
+    await q.edit_message_text(
+        "TENANT - WANTED\n\nStep 1: Location?",
+        parse_mode="Markdown")
+    return T_LOC
 
-async def a_loc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["draft"]["location"] = update.message.text
-    await update.message.reply_text("Step 2: Rent? (e.g. 6000 AED/month)")
+async def a_loc(update, context):
+    context.user_data["draft"]["location"] = \
+        update.message.text
+    await update.message.reply_text(
+        "Step 2: Rent? (e.g. 6000 AED/month)")
     return A_RENT
 
-async def a_rent(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["draft"]["rent"] = update.message.text
-    await update.message.reply_text("Step 3: Type? (Studio, 1BR, 2BR, Villa)")
+async def a_rent(update, context):
+    context.user_data["draft"]["rent"] = \
+        update.message.text
+    await update.message.reply_text(
+        "Step 3: Type? (Studio, 1BR, 2BR, Villa)")
     return A_TYPE
 
-async def a_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["draft"]["type"] = update.message.text
-    await update.message.reply_text("Step 4: Furnished / Unfurnished / Semi?")
+async def a_type(update, context):
+    context.user_data["draft"]["type"] = \
+        update.message.text
+    await update.message.reply_text(
+        "Step 4: Furnished / Unfurnished?")
     return A_FURN
 
-async def a_furn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["draft"]["furn"] = update.message.text
-    await update.message.reply_text("Step 5: Available From? (e.g. 1 Dec, Immediately)")
+async def a_furn(update, context):
+    context.user_data["draft"]["furn"] = \
+        update.message.text
+    await update.message.reply_text(
+        "Step 5: Available From?")
     return A_AVAIL
 
-async def a_avail(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["draft"]["avail"] = update.message.text
-    await update.message.reply_text("Step 6: Send photos (or type 'skip')")
+async def a_avail(update, context):
+    context.user_data["draft"]["avail"] = \
+        update.message.text
+    await update.message.reply_text(
+        "Step 6: Send photos (or type skip)")
     return A_PHOTOS
 
-async def a_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def a_photos(update, context):
     d = context.user_data["draft"]
     if update.message.photo:
         if "photos" not in d:
             d["photos"] = []
-        d["photos"].append(update.message.photo[-1].file_id)
-        await update.message.reply_text("Photo saved. Send another or type 'done'")
+        d["photos"].append(
+            update.message.photo[-1].file_id)
+        await update.message.reply_text(
+            "Photo saved. Send more or type done")
         return A_PHOTOS
-    if update.message.text and update.message.text.lower() in ["skip", "done"]:
-        await update.message.reply_text("Step 7: Short description + any other things tenants need?")
+    txt = update.message.text or ""
+    if txt.lower() in ["skip", "done"]:
+        await update.message.reply_text(
+            "Step 7: Short description?")
         return A_DESC
-    await update.message.reply_text("Send photo or type 'done'")
+    await update.message.reply_text(
+        "Send photo or type done")
     return A_PHOTOS
 
-async def a_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["draft"]["desc"] = update.message.text
-    await update.message.reply_text("Step 8: Agent / Landlord Name?")
+async def a_desc(update, context):
+    context.user_data["draft"]["desc"] = \
+        update.message.text
+    await update.message.reply_text(
+        "Step 8: Agent / Landlord Name?")
     return A_NAME
 
-async def a_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["draft"]["name"] = update.message.text
+async def a_name(update, context):
+    context.user_data["draft"]["name"] = \
+        update.message.text
     uid = update.effective_user.id
     if not users.get(uid, {}).get("verified"):
-        await update.message.reply_text("🔐 Final Step - Verification (only this first time)\n\nPlease share your phone. You will NOT be asked again.", reply_markup=share_phone_kb(), parse_mode="Markdown")
+        await update.message.reply_text(
+            "Final Step - Verification (1st time only)\n"
+            "Please share your phone.",
+            reply_markup=share_phone_kb(),
+            parse_mode="Markdown")
         return A_VERIFY
     return await a_check_contact(update, context)
 
-async def a_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def a_verify(update, context):
     uid = update.effective_user.id
     if not update.message.contact:
-        await update.message.reply_text("Please tap Share My Contact button.")
+        await update.message.reply_text(
+            "Tap Share My Contact button.")
         return A_VERIFY
     if uid not in users:
         users[uid] = {}
     users[uid]["verified"] = True
-    users[uid]["verify_phone"] = update.message.contact.phone_number
-    await update.message.reply_text("✅ Verified! You won't need this again.", reply_markup=ReplyKeyboardRemove())
+    users[uid]["verify_phone"] = \
+        update.message.contact.phone_number
+    await update.message.reply_text(
+        "Verified! No need again.",
+        reply_markup=ReplyKeyboardRemove())
     return await a_check_contact(update, context)
 
-async def a_check_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def a_check_contact(update, context):
     uid = update.effective_user.id
     if users.get(uid, {}).get("agent_contact"):
-        context.user_data["draft"]["agent_contact"] = users[uid]["agent_contact"]
+        context.user_data["draft"]["agent_contact"] = \
+            users[uid]["agent_contact"]
         return await a_preview(update, context)
-    await update.message.reply_text("📱 Final Step - Your Contact\n\nThis contact will NEVER be in the channel post. It will only be given to interested tenants who pay 10 AED.\n\nPlease share your contact:", reply_markup=share_phone_kb(), parse_mode="Markdown")
+    await update.message.reply_text(
+        "Final Step - Your Contact\n"
+        "Never in channel post. Only for\n"
+        "tenants who pay 10 AED.\n"
+        "Please share contact:",
+        reply_markup=share_phone_kb(),
+        parse_mode="Markdown")
     return A_CONTACT
 
-async def a_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def a_contact(update, context):
     uid = update.effective_user.id
     if not update.message.contact:
-        await update.message.reply_text("Please tap Share My Contact button.")
+        await update.message.reply_text(
+            "Tap Share My Contact button.")
         return A_CONTACT
     if uid not in users:
         users[uid] = {}
-    users[uid]["agent_contact"] = update.message.contact.phone_number
-    context.user_data["draft"]["agent_contact"] = update.message.contact.phone_number
-    await update.message.reply_text("✅ Contact saved (private).", reply_markup=ReplyKeyboardRemove())
+    users[uid]["agent_contact"] = \
+        update.message.contact.phone_number
+    context.user_data["draft"]["agent_contact"] = \
+        update.message.contact.phone_number
+    await update.message.reply_text(
+        "Contact saved (private).",
+        reply_markup=ReplyKeyboardRemove())
     return await a_preview(update, context)
 
-async def a_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def a_preview(update, context):
     d = context.user_data["draft"]
-    txt = "👀 PREVIEW - PROPERTY\n\nLocation: " + str(d.get("location")) + "\nRent: " + str(d.get("rent")) + "\nType: " + str(d.get("type")) + " | " + str(d.get("furn")) + "\nAvailable: " + str(d.get("avail")) + "\nAgent: " + str(d.get("name")) + "\nDesc: " + str(d.get("desc")) + "\n\nNo contact will be shown in channel.\n\nPost this?"
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes, POST", callback_data="agent_confirm")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="restart")],
-        [InlineKeyboardButton("❓ Help", callback_data="help")],
-    ])
+    txt = "PREVIEW - PROPERTY\n\n"
+    txt += "Location: " + str(d.get("location")) + "\n"
+    txt += "Rent: " + str(d.get("rent")) + "\n"
+    txt += "Type: " + str(d.get("type")) + "\n"
+    txt += "Furn: " + str(d.get("furn")) + "\n"
+    txt += "Available: " + str(d.get("avail")) + "\n"
+    txt += "Agent: " + str(d.get("name")) + "\n"
+    txt += "Desc: " + str(d.get("desc")) + "\n\n"
+    txt += "No contact in channel.\n\nPost this?"
+    b1 = InlineKeyboardButton(
+        "Yes, POST", callback_data="agent_confirm")
+    b2 = InlineKeyboardButton(
+        "Cancel", callback_data="restart")
+    b3 = InlineKeyboardButton(
+        "Help", callback_data="help")
+    kb = InlineKeyboardMarkup([[b1], [b2], [b3]])
     if update.callback_query:
-        await update.callback_query.edit_message_text(txt, reply_markup=kb, parse_mode="Markdown")
+        await update.callback_query.edit_message_text(
+            txt, reply_markup=kb, parse_mode="Markdown")
     else:
-        await update.message.reply_text(txt, reply_markup=kb, parse_mode="Markdown")
+        await update.message.reply_text(
+            txt, reply_markup=kb, parse_mode="Markdown")
     return A_CONFIRM
 
-async def agent_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def agent_confirm(update, context):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
@@ -271,56 +397,101 @@ async def agent_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     post["agent_contact"] = d.get("agent_contact")
     post["channel_msg_id"] = None
     agent_posts.append(post)
-    caption = "🏠 PROPERTY FOR RENT\n\nLocation: " + str(d.get("location")) + "\nRent: " + str(d.get("rent")) + "\nType: " + str(d.get("type")) + " | " + str(d.get("furn")) + "\nAvailable: " + str(d.get("avail")) + "\nAgent: " + str(d.get("name")) + "\nDesc: " + str(d.get("desc")) + "\n\nTap to show interest"
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💬 I'm Interested", url=BOT_LINK + "?start=interested_" + str(pid))],
-        [InlineKeyboardButton("🔗 Share", switch_inline_query="Property in " + str(d.get("location")))],
-        [InlineKeyboardButton("📢 Channel", url=CHANNEL_LINK)],
-    ])
+    cap = "PROPERTY FOR RENT\n\n"
+    cap += "Location: " + str(d.get("location")) + "\n"
+    cap += "Rent: " + str(d.get("rent")) + "\n"
+    cap += "Type: " + str(d.get("type")) + "\n"
+    cap += "Furn: " + str(d.get("furn")) + "\n"
+    cap += "Available: " + str(d.get("avail")) + "\n"
+    cap += "Agent: " + str(d.get("name")) + "\n"
+    cap += "Desc: " + str(d.get("desc")) + "\n\n"
+    cap += "Tap to show interest"
+    url1 = BOT_LINK + "?start=interested_" + str(pid)
+    b1 = InlineKeyboardButton(
+        "I am Interested", url=url1)
+    b2 = InlineKeyboardButton(
+        "Share",
+        switch_inline_query="Property in " + str(
+            d.get("location")))
+    b3 = InlineKeyboardButton(
+        "Channel", url=CHANNEL_LINK)
+    kb = InlineKeyboardMarkup([[b1], [b2], [b3]])
     try:
         if d.get("photos"):
-            msg = await context.bot.send_photo(CHANNEL_ID, d["photos"][0], caption=caption, reply_markup=kb, parse_mode="Markdown")
+            msg = await context.bot.send_photo(
+                CHANNEL_ID, d["photos"][0],
+                caption=cap, reply_markup=kb,
+                parse_mode="Markdown")
         else:
-            msg = await context.bot.send_message(CHANNEL_ID, caption, reply_markup=kb, parse_mode="Markdown")
+            msg = await context.bot.send_message(
+                CHANNEL_ID, cap, reply_markup=kb,
+                parse_mode="Markdown")
         post["channel_msg_id"] = msg.message_id
     except Exception as e:
-        print("Channel post failed", e)
-    await q.edit_message_text("✅ Posted to @dubairentonly!\nNo contact was posted publicly.\n\nWant to pin it on top for 25 AED (24h)?", reply_markup=pin_kb("agent", pid), parse_mode="Markdown")
+        print("Channel post fail", e)
+    await q.edit_message_text(
+        "Posted to @dubairentonly!\n"
+        "No contact posted publicly.\n\n"
+        "Want to pin it for 25 AED (24h)?",
+        reply_markup=pin_kb("agent", pid),
+        parse_mode="Markdown")
     context.user_data.clear()
     return ROLE
 
-async def t_loc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["draft"]["location"] = update.message.text
-    await update.message.reply_text("Step 2: Budget? (e.g. 5000 AED/month)")
+async def t_loc(update, context):
+    context.user_data["draft"]["location"] = \
+        update.message.text
+    await update.message.reply_text(
+        "Step 2: Budget? (e.g. 5000 AED/month)")
     return T_BUDGET
 
-async def t_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["draft"]["budget"] = update.message.text
-    await update.message.reply_text("Step 3: Type needed? (Studio, 1BR, 2BR, Villa)")
+async def t_budget(update, context):
+    context.user_data["draft"]["budget"] = \
+        update.message.text
+    await update.message.reply_text(
+        "Step 3: Type needed? (Studio, 1BR, Villa)")
     return T_TYPE
 
-async def t_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["draft"]["type"] = update.message.text
-    await update.message.reply_text("🔒 Last Step - Your Contact\n\nYour contact is SAFE. It will NEVER be posted publicly. It will only be given to agents who pay 10 AED to contact you.\n\nPlease share your contact:", reply_markup=share_phone_kb(), parse_mode="Markdown")
+async def t_type(update, context):
+    context.user_data["draft"]["type"] = \
+        update.message.text
+    await update.message.reply_text(
+        "Last Step - Your Contact\n"
+        "SAFE. Never posted publicly.\n"
+        "Only for agents who pay 10 AED.\n"
+        "Please share contact:",
+        reply_markup=share_phone_kb(),
+        parse_mode="Markdown")
     return T_CONTACT
 
-async def t_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def t_contact(update, context):
     if not update.message.contact:
-        await update.message.reply_text("Please tap Share My Contact button to avoid fake numbers.")
+        await update.message.reply_text(
+            "Tap Share My Contact button.")
         return T_CONTACT
-    context.user_data["draft"]["contact"] = update.message.contact.phone_number
-    await update.message.reply_text("✅ Contact saved (private).", reply_markup=ReplyKeyboardRemove())
+    context.user_data["draft"]["contact"] = \
+        update.message.contact.phone_number
+    await update.message.reply_text(
+        "Contact saved (private).",
+        reply_markup=ReplyKeyboardRemove())
     d = context.user_data["draft"]
-    txt = "👀 PREVIEW - WANTED\n\nLocation: " + str(d.get("location")) + "\nBudget: " + str(d.get("budget")) + "\nType: " + str(d.get("type")) + "\n\nNo contact will be shown in channel.\n\nPost this?"
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes, POST", callback_data="tenant_confirm")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="restart")],
-        [InlineKeyboardButton("❓ Help", callback_data="help")],
-    ])
-    await update.message.reply_text(txt, reply_markup=kb, parse_mode="Markdown")
+    txt = "PREVIEW - WANTED\n\n"
+    txt += "Location: " + str(d.get("location")) + "\n"
+    txt += "Budget: " + str(d.get("budget")) + "\n"
+    txt += "Type: " + str(d.get("type")) + "\n\n"
+    txt += "No contact in channel.\n\nPost this?"
+    b1 = InlineKeyboardButton(
+        "Yes, POST", callback_data="tenant_confirm")
+    b2 = InlineKeyboardButton(
+        "Cancel", callback_data="restart")
+    b3 = InlineKeyboardButton(
+        "Help", callback_data="help")
+    kb = InlineKeyboardMarkup([[b1], [b2], [b3]])
+    await update.message.reply_text(
+        txt, reply_markup=kb, parse_mode="Markdown")
     return T_CONFIRM
 
-async def tenant_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def tenant_confirm(update, context):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
@@ -335,65 +506,110 @@ async def tenant_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     post["contact"] = d.get("contact")
     post["channel_msg_id"] = None
     tenant_posts.append(post)
-    caption = "🔍 TENANT LOOKING FOR RENT\n\nWanted: " + str(d.get("location")) + "\nBudget: " + str(d.get("budget")) + "\nType: " + str(d.get("type")) + "\n\nAgents: Tap to get Tenant contact (10 AED)"
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 Get Tenant Contact - 10 AED", url=BOT_LINK + "?start=wanted_" + str(pid))],
-        [InlineKeyboardButton("🔗 Share", switch_inline_query="Wanted in " + str(d.get("location")))],
-        [InlineKeyboardButton("📢 Channel", url=CHANNEL_LINK)],
-    ])
+    cap = "TENANT LOOKING FOR RENT\n\n"
+    cap += "Wanted: " + str(d.get("location")) + "\n"
+    cap += "Budget: " + str(d.get("budget")) + "\n"
+    cap += "Type: " + str(d.get("type")) + "\n\n"
+    cap += "Agents: Tap to get contact (10 AED)"
+    url1 = BOT_LINK + "?start=wanted_" + str(pid)
+    b1 = InlineKeyboardButton(
+        "Get Tenant Contact - 10 AED", url=url1)
+    b2 = InlineKeyboardButton(
+        "Share",
+        switch_inline_query="Wanted in " + str(
+            d.get("location")))
+    b3 = InlineKeyboardButton(
+        "Channel", url=CHANNEL_LINK)
+    kb = InlineKeyboardMarkup([[b1], [b2], [b3]])
     try:
-        msg = await context.bot.send_message(CHANNEL_ID, caption, reply_markup=kb, parse_mode="Markdown")
+        msg = await context.bot.send_message(
+            CHANNEL_ID, cap, reply_markup=kb,
+            parse_mode="Markdown")
         post["channel_msg_id"] = msg.message_id
     except Exception as e:
-        print("Channel post failed", e)
-    await q.edit_message_text("✅ Posted to @dubairentonly!\nNo contact was posted publicly.\n\nWant to pin it on top for 25 AED (24h)?", reply_markup=pin_kb("tenant", pid), parse_mode="Markdown")
+        print("Channel post fail", e)
+    await q.edit_message_text(
+        "Posted to @dubairentonly!\n"
+        "No contact posted publicly.\n\n"
+        "Want to pin it for 25 AED (24h)?",
+        reply_markup=pin_kb("tenant", pid),
+        parse_mode="Markdown")
     context.user_data.clear()
     return ROLE
 
-async def show_agent_post_in_dm(update: Update, context: ContextTypes.DEFAULT_TYPE, pid):
+async def show_agent_post(update, context, pid):
     if pid >= len(agent_posts):
-        await update.message.reply_text("Post not found.", reply_markup=main_kb())
+        await update.message.reply_text(
+            "Post not found.", reply_markup=main_kb())
         return ROLE
     p = agent_posts[pid]
     context.user_data["interested_pid"] = pid
-    txt = "🏠 PROPERTY\n\nLocation: " + str(p.get("location")) + "\nRent: " + str(p.get("rent")) + "\nType: " + str(p.get("type")) + " | " + str(p.get("furn")) + "\nAvailable: " + str(p.get("avail")) + "\nAgent: " + str(p.get("name")) + "\nDesc: " + str(p.get("desc")) + "\n\nAre you interested?"
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes, I'm Interested", callback_data="int_yes")],
-        [InlineKeyboardButton("❌ No", callback_data="restart")],
-        [InlineKeyboardButton("❓ Help", callback_data="help")],
-    ])
-    await update.message.reply_text(txt, reply_markup=kb, parse_mode="Markdown")
+    txt = "PROPERTY\n\n"
+    txt += "Location: " + str(p.get("location")) + "\n"
+    txt += "Rent: " + str(p.get("rent")) + "\n"
+    txt += "Type: " + str(p.get("type")) + "\n"
+    txt += "Furn: " + str(p.get("furn")) + "\n"
+    txt += "Available: " + str(p.get("avail")) + "\n"
+    txt += "Agent: " + str(p.get("name")) + "\n"
+    txt += "Desc: " + str(p.get("desc")) + "\n\n"
+    txt += "Are you interested?"
+    b1 = InlineKeyboardButton(
+        "Yes, I am Interested",
+        callback_data="int_yes")
+    b2 = InlineKeyboardButton(
+        "No", callback_data="restart")
+    b3 = InlineKeyboardButton(
+        "Help", callback_data="help")
+    kb = InlineKeyboardMarkup([[b1], [b2], [b3]])
+    await update.message.reply_text(
+        txt, reply_markup=kb, parse_mode="Markdown")
     return ROLE
 
-async def int_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def int_yes(update, context):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
     pid = context.user_data.get("interested_pid")
     if (uid, pid) in interested:
-        await q.edit_message_text("You already sent interest for this property. Agent will contact you.", reply_markup=main_kb())
+        await q.edit_message_text(
+            "You already sent interest.",
+            reply_markup=main_kb())
         return ROLE
-    await q.edit_message_text("✅ Interested!\n\nWhat is your Budget?", parse_mode="Markdown")
+    await q.edit_message_text(
+        "Interested!\n\nWhat is your Budget?",
+        parse_mode="Markdown")
     return INT_BUDGET
 
-async def int_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["lead_budget"] = update.message.text
-    await update.message.reply_text("Move-in Date? (e.g. 1 Dec)")
+async def int_budget(update, context):
+    context.user_data["lead_budget"] = \
+        update.message.text
+    await update.message.reply_text(
+        "Move-in Date? (e.g. 1 Dec)")
     return INT_MOVEIN
 
-async def int_movein(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["lead_movein"] = update.message.text
-    await update.message.reply_text("🔒 Your Contact\n\nGive your number so Agent can contact you. It will NOT be posted publicly. It will only be shown to this Agent if he pays 10 AED.", reply_markup=share_phone_kb(), parse_mode="Markdown")
+async def int_movein(update, context):
+    context.user_data["lead_movein"] = \
+        update.message.text
+    await update.message.reply_text(
+        "Your Contact\n"
+        "Give number so Agent can contact you.\n"
+        "NOT public. Only Agent after paying 10 AED.",
+        reply_markup=share_phone_kb(),
+        parse_mode="Markdown")
     return INT_CONTACT
 
-async def int_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def int_contact(update, context):
     if not update.message.contact:
-        await update.message.reply_text("Please tap Share My Contact button.")
+        await update.message.reply_text(
+            "Tap Share My Contact button.")
         return INT_CONTACT
-    context.user_data["lead_contact"] = update.message.contact.phone_number
-    await update.message.reply_text("✅ Contact saved.", reply_markup=ReplyKeyboardRemove())
+    context.user_data["lead_contact"] = \
+        update.message.contact.phone_number
+    await update.message.reply_text(
+        "Contact saved.",
+        reply_markup=ReplyKeyboardRemove())
     pid = context.user_data.get("interested_pid")
     p = agent_posts[pid]
-    txt = "👀 CONFIRM - Send to Agent?\n\nProperty: " + str(p.get("location")) + " - " + str(p.get("rent")) + "\nYour Budget: " + str(context.user_data.get("lead_budget")) + "\nMove-in: " + str(context.user_data.get("lead_movein")) + "\nYour Contact: " + str(context.user_data.get("lead_contact")) + " (private, only Agent sees after paying)\n\nSend?"
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes, Send
+    txt = "CONFIRM - Send to Agent?\n\n"
+    txt += "Property: " + str(p.get("location"))
+    tx
