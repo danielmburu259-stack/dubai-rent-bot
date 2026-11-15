@@ -122,12 +122,13 @@ DAILY_TIPS = [
  "Your home should support your life, not stress it.",
 ]
 
+# --- ONLY THIS FUNCTION WAS CHANGED FOR THE FIX ---
 def is_valid_backup(txt):
     t = (txt or "").strip()
     if not t:
         return False
+    # Email - must have @ and .
     if "@" in t:
-        # Email check: a@b.c, no spaces
         if " " in t:
             return False
         parts = t.split("@")
@@ -140,11 +141,15 @@ def is_valid_backup(txt):
         if parts[1].startswith(".") or parts[1].endswith("."):
             return False
         return True
-    # Phone check: allow + , spaces, dashes
-    cleaned = t.replace("+", "").replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    # Phone - MUST start with + and country code
+    # FIX: 7667876, 501234567, 0501234567 now REJECTED
+    if not t.startswith("+"):
+        return False
+    cleaned = t[1:].replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
     if not cleaned.isdigit():
         return False
-    if len(cleaned) < 7 or len(cleaned) > 15:
+    # +971501234567 = 12 digits after +
+    if len(cleaned) < 8 or len(cleaned) > 15:
         return False
     return True
 
@@ -168,12 +173,14 @@ def help_text():
     t10 = "Pay with Stars, get contact instantly.\n\n"
     t11 = "Backup: You can add optional 2nd\n"
     t12 = "number / email. Hidden too.\n"
-    t13 = "Backup is NOT verified by bot.\n\n"
-    t14 = "Channel: @dubairentonly\n"
-    t15 = "Complaints / Problem / Refund?\n"
-    t16 = "Contact Admin directly: @Givon5\n"
-    t17 = "Admin will reply fast."
-    return t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8 + t9 + t10 + t11 + t12 + t13 + t14 + t15 + t16 + t17
+    t13 = "Backup number must start with +\n"
+    t14 = "e.g. +971501234567\n"
+    t15 = "Backup is NOT verified by bot.\n\n"
+    t16 = "Channel: @dubairentonly\n"
+    t17 = "Complaints / Problem / Refund?\n"
+    t18 = "Contact Admin directly: @Givon5\n"
+    t19 = "Admin will reply fast."
+    return t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8 + t9 + t10 + t11 + t12 + t13 + t14 + t15 + t16 + t17 + t18 + t19
 
 def main_kb():
     b1 = InlineKeyboardButton(
@@ -468,8 +475,9 @@ async def a_contact(update, context):
         "Contact saved (private).\n\n"
         "Optional Backup (helps if your\n"
         "main number is virtual / not working)\n"
-        "Send a 2nd number OR email.\n"
-        "Or type skip.\n\n"
+        "Send a 2nd number WITH + country code\n"
+        "e.g. +971501234567\n"
+        "OR email. Or type skip.\n\n"
         "Backup is also private. Only buyer sees it.",
         reply_markup=ReplyKeyboardRemove())
     return A_BACKUP
@@ -487,7 +495,8 @@ async def a_backup(update, context):
     if not is_valid_backup(txt):
         await update.message.reply_text(
             "That doesn't look like a number or email.\n"
-            "Send a valid 2nd number (e.g. +971501234567)\n"
+            "Number MUST start with + and country code\n"
+            "e.g. +971501234567\n"
             "or email (e.g. name@gmail.com)\n"
             "Or type skip.")
         return A_BACKUP
@@ -632,8 +641,9 @@ async def t_contact(update, context):
         "Contact saved (private).\n\n"
         "Optional Backup (helps if your\n"
         "main number is virtual / not working)\n"
-        "Send a 2nd number OR email.\n"
-        "Or type skip.\n\n"
+        "Send a 2nd number WITH + country code\n"
+        "e.g. +971501234567\n"
+        "OR email. Or type skip.\n\n"
         "Backup is also private.",
         reply_markup=ReplyKeyboardRemove())
     return T_BACKUP
@@ -648,7 +658,8 @@ async def t_backup(update, context):
     if not is_valid_backup(txt):
         await update.message.reply_text(
             "That doesn't look like a number or email.\n"
-            "Send a valid 2nd number (e.g. +971501234567)\n"
+            "Number MUST start with + and country code\n"
+            "e.g. +971501234567\n"
             "or email (e.g. name@gmail.com)\n"
             "Or type skip.")
         return T_BACKUP
@@ -802,8 +813,9 @@ async def int_contact(update, context):
         "Contact saved.\n\n"
         "Optional Backup (helps if your\n"
         "main number is virtual / not working)\n"
-        "Send a 2nd number OR email.\n"
-        "Or type skip.",
+        "Send a 2nd number WITH + country code\n"
+        "e.g. +971501234567\n"
+        "OR email. Or type skip.",
         reply_markup=ReplyKeyboardRemove())
     return INT_BACKUP
 
@@ -817,7 +829,8 @@ async def int_backup(update, context):
     if not is_valid_backup(txt):
         await update.message.reply_text(
             "That doesn't look like a number or email.\n"
-            "Send a valid 2nd number (e.g. +971501234567)\n"
+            "Number MUST start with + and country code\n"
+            "e.g. +971501234567\n"
             "or email (e.g. name@gmail.com)\n"
             "Or type skip.")
         return INT_BACKUP
