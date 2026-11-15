@@ -43,6 +43,16 @@ from telegram.ext import ContextTypes
 from telegram.ext import filters
 from telegram.ext import ConversationHandler
 
+# --- UPSTASH PERSISTENCE - NEW ONLY ---
+try:
+    from upstash_redis import Redis
+    _r = None
+    if os.environ.get("UPSTASH_REDIS_REST_URL"):
+        _r = Redis.from_env()
+except Exception as e:
+    print("Upstash init fail", e)
+    _r = None
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 print("STARTING...", flush=True)
 print("TOKEN LEN:", len(BOT_TOKEN or ""), flush=True)
@@ -100,6 +110,13 @@ def save_data():
             "leads": leads,
             "interested": [list(x) for x in interested],
         }
+        # 1. Save to Upstash - survives deploys
+        if _r is not None:
+            try:
+                _r.set("bot_data", json.dumps(data))
+            except Exception as e:
+                print("Upstash save fail", e)
+        # 2. Keep local file as backup - same as before
         with open(DATA_FILE, "w") as f:
             json.dump(data, f)
     except Exception as e:
@@ -107,12 +124,31 @@ def save_data():
 
 def load_data():
     global users, agent_posts, tenant_posts, leads, interested
-    try:
-        if not os.path.exists(DATA_FILE):
-            print("No data file, starting fresh")
+    data = None
+    # 1. Try Upstash first
+    if _r is not None:
+        try:
+            raw = _r.get("bot_data")
+            if raw:
+                if isinstance(raw, str):
+                    data = json.loads(raw)
+                else:
+                    data = raw
+                print("Loaded from Upstash")
+        except Exception as e:
+            print("Upstash load fail", e)
+    # 2. Fallback to local file if Upstash empty - same as before
+    if data is None:
+        try:
+            if not os.path.exists(DATA_FILE):
+                print("No data file, starting fresh")
+                return
+            with open(DATA_FILE, "r") as f:
+                data = json.load(f)
+        except Exception as e:
+            print("Load fail", e)
             return
-        with open(DATA_FILE, "r") as f:
-            data = json.load(f)
+    try:
         users = {int(k): v for k, v in data.get("users", {}).items()}
         agent_posts = data.get("agent_posts", [])
         tenant_posts = data.get("tenant_posts", [])
