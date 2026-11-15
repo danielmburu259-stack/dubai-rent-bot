@@ -43,7 +43,7 @@ from telegram.ext import ContextTypes
 from telegram.ext import filters
 from telegram.ext import ConversationHandler
 
-# --- UPSTASH PERSISTENCE - NEW ONLY ---
+# --- UPSTASH PERSISTENCE ---
 try:
     from upstash_redis import Redis
     _r = None
@@ -92,7 +92,6 @@ A_BACKUP = 22
 T_BACKUP = 23
 INT_BACKUP = 24
 
-# --- PERSISTENCE FIX ONLY ---
 DATA_FILE = "data.json"
 
 users = {}
@@ -110,13 +109,11 @@ def save_data():
             "leads": leads,
             "interested": [list(x) for x in interested],
         }
-        # 1. Save to Upstash - survives deploys
         if _r is not None:
             try:
                 _r.set("bot_data", json.dumps(data))
             except Exception as e:
                 print("Upstash save fail", e)
-        # 2. Keep local file as backup - same as before
         with open(DATA_FILE, "w") as f:
             json.dump(data, f)
     except Exception as e:
@@ -125,7 +122,6 @@ def save_data():
 def load_data():
     global users, agent_posts, tenant_posts, leads, interested
     data = None
-    # 1. Try Upstash first
     if _r is not None:
         try:
             raw = _r.get("bot_data")
@@ -137,7 +133,6 @@ def load_data():
                 print("Loaded from Upstash")
         except Exception as e:
             print("Upstash load fail", e)
-    # 2. Fallback to local file if Upstash empty - same as before
     if data is None:
         try:
             if not os.path.exists(DATA_FILE):
@@ -228,8 +223,8 @@ def format_contact(primary, backup):
 
 def help_text():
     t1 = "HELP\n\n"
-    t2 = "Agent: Post PROPERTY free.\n"
-    t3 = "Verification + Contact on 1st post only.\n\n"
+    t2 = "Agent / Landlord: Post PROPERTY free.\n"
+    t3 = "Contact on 1st post only. Share once.\n\n"
     t4 = "Tenant: Post WANTED free.\n"
     t5 = "Contact at END. Never public.\n\n"
     t6 = "Contacts: 200 Stars.\n"
@@ -250,7 +245,7 @@ def help_text():
 
 def main_kb():
     b1 = InlineKeyboardButton(
-        "Agent - Post PROPERTY",
+        "Agent / Landlord - Post PROPERTY",
         callback_data="role_agent")
     b2 = InlineKeyboardButton(
         "Tenant - Post WANTED",
@@ -408,7 +403,7 @@ async def role_handler(update, context):
         context.user_data["role"] = "agent"
         context.user_data["draft"] = {}
         await q.edit_message_text(
-            "AGENT - PROPERTY\n\nStep 1: Location?",
+            "AGENT / LANDLORD - PROPERTY\n\nStep 1: Location?",
             parse_mode="Markdown")
         return A_LOC
     context.user_data["role"] = "tenant"
@@ -482,31 +477,8 @@ async def a_desc(update, context):
 async def a_name(update, context):
     context.user_data["draft"]["name"] = \
         update.message.text
-    uid = update.effective_user.id
-    if not users.get(uid, {}).get("verified"):
-        await update.message.reply_text(
-            "Final Step - Verification (1st time only)\n"
-            "Please share your phone.",
-            reply_markup=share_phone_kb(),
-            parse_mode="Markdown")
-        return A_VERIFY
-    return await a_check_contact(update, context)
-
-async def a_verify(update, context):
-    uid = update.effective_user.id
-    if not update.message.contact:
-        await update.message.reply_text(
-            "Tap Share My Contact button.")
-        return A_VERIFY
-    if uid not in users:
-        users[uid] = {}
-    users[uid]["verified"] = True
-    users[uid]["verify_phone"] = \
-        update.message.contact.phone_number
-    save_data()
-    await update.message.reply_text(
-        "Verified! No need again.",
-        reply_markup=ReplyKeyboardRemove())
+    # CHANGED: No more separate verification step.
+    # One share below counts as both verification + contact.
     return await a_check_contact(update, context)
 
 async def a_check_contact(update, context):
@@ -532,12 +504,14 @@ async def a_contact(update, context):
         await update.message.reply_text(
             "Tap Share My Contact button.")
         return A_CONTACT
+    phone = update.message.contact.phone_number
     if uid not in users:
         users[uid] = {}
-    users[uid]["agent_contact"] = \
-        update.message.contact.phone_number
-    context.user_data["draft"]["agent_contact"] = \
-        update.message.contact.phone_number
+    # CHANGED: One share = verification + contact
+    users[uid]["verified"] = True
+    users[uid]["verify_phone"] = phone
+    users[uid]["agent_contact"] = phone
+    context.user_data["draft"]["agent_contact"] = phone
     save_data()
     await update.message.reply_text(
         "Contact saved (private).\n\n"
@@ -586,7 +560,7 @@ async def a_preview(update, context):
     txt += "Type: " + str(d.get("type")) + "\n"
     txt += "Furn: " + str(d.get("furn")) + "\n"
     txt += "Available: " + str(d.get("avail")) + "\n"
-    txt += "Agent: " + str(d.get("name")) + "\n"
+    txt += "Agent / Landlord: " + str(d.get("name")) + "\n"
     txt += "Desc: " + str(d.get("desc")) + "\n\n"
     txt += "No contact in channel.\n\nPost this?"
     b1 = InlineKeyboardButton(
@@ -632,7 +606,7 @@ async def agent_confirm(update, context):
     cap += "Type: " + str(d.get("type")) + "\n"
     cap += "Furn: " + str(d.get("furn")) + "\n"
     cap += "Available: " + str(d.get("avail")) + "\n"
-    cap += "Agent: " + str(d.get("name")) + "\n"
+    cap += "Agent / Landlord: " + str(d.get("name")) + "\n"
     cap += "Desc: " + str(d.get("desc")) + "\n\n"
     cap += "Tap to show interest"
     url1 = BOT_LINK + "?start=interested_" + str(pid)
@@ -696,7 +670,7 @@ async def t_type(update, context):
     await update.message.reply_text(
         "Last Step - Your Contact\n"
         "SAFE. Never posted publicly.\n"
-        "Only for agents who pay 200 Stars.\n"
+        "Only for Agents / Landlords who pay 200 Stars.\n"
         "Please share contact:",
         reply_markup=share_phone_kb(),
         parse_mode="Markdown")
@@ -779,7 +753,7 @@ async def tenant_confirm(update, context):
     cap += "Wanted: " + str(d.get("location")) + "\n"
     cap += "Budget: " + str(d.get("budget")) + "\n"
     cap += "Type: " + str(d.get("type")) + "\n\n"
-    cap += "Agents: Tap to get contact (200 Stars)"
+    cap += "Agents / Landlords: Tap to get contact (200 Stars)"
     url1 = BOT_LINK + "?start=wanted_" + str(pid)
     b1 = InlineKeyboardButton(
         "Get Tenant Contact - 200 Stars", url=url1)
@@ -820,7 +794,7 @@ async def show_agent_post(update, context, pid):
         await update.message.reply_text(
             "This post is no longer available.\n"
             "It was made before bot restart.\n"
-            "Please ask agent to re-post.\n"
+            "Please ask owner to re-post.\n"
             "Or check new posts in channel.",
             reply_markup=main_kb())
         return ROLE
@@ -832,7 +806,7 @@ async def show_agent_post(update, context, pid):
     txt += "Type: " + str(p.get("type")) + "\n"
     txt += "Furn: " + str(p.get("furn")) + "\n"
     txt += "Available: " + str(p.get("avail")) + "\n"
-    txt += "Agent: " + str(p.get("name")) + "\n"
+    txt += "Agent / Landlord: " + str(p.get("name")) + "\n"
     txt += "Desc: " + str(p.get("desc")) + "\n\n"
     txt += "Are you interested?"
     b1 = InlineKeyboardButton(
@@ -874,8 +848,8 @@ async def int_movein(update, context):
         update.message.text
     await update.message.reply_text(
         "Your Contact\n"
-        "Give number so Agent can contact you.\n"
-        "NOT public. Only Agent after paying 200 Stars.",
+        "Give number so Owner can contact you.\n"
+        "NOT public. Only Owner after paying 200 Stars.",
         reply_markup=share_phone_kb(),
         parse_mode="Markdown")
     return INT_CONTACT
@@ -920,7 +894,7 @@ async def int_backup(update, context):
 async def int_preview(update, context):
     pid = context.user_data.get("interested_pid")
     p = agent_posts[pid]
-    txt = "CONFIRM - Send to Agent?\n\n"
+    txt = "CONFIRM - Send to Owner?\n\n"
     txt += "Property: " + str(p.get("location"))
     txt += " - " + str(p.get("rent")) + "\n"
     txt += "Your Budget: "
@@ -931,7 +905,7 @@ async def int_preview(update, context):
     txt += str(context.user_data.get("lead_contact"))
     txt += " (private)\n\nSend?"
     b1 = InlineKeyboardButton(
-        "Yes, Send to Agent",
+        "Yes, Send to Owner",
         callback_data="int_confirm")
     b2 = InlineKeyboardButton(
         "Cancel", callback_data="restart")
@@ -987,21 +961,21 @@ async def int_confirm(update, context):
         print("Agent DM fail", e)
     cb2 = "pay_agent_" + str(lead_id)
     b3 = InlineKeyboardButton(
-        "Get Agent Contact - 200 Stars",
+        "Get Owner Contact - 200 Stars",
         callback_data=cb2)
     b4 = InlineKeyboardButton(
-        "Let Agent Contact Me",
+        "Let Owner Contact Me",
         callback_data="restart")
     b5 = InlineKeyboardButton(
         "Help", callback_data="help")
     tenant_kb = InlineKeyboardMarkup(
         [[b3], [b4], [b5]])
     await q.edit_message_text(
-        "Sent to Agent!\n"
-        "Agent got Budget + Move-in,\n"
+        "Sent to Owner!\n"
+        "Owner got Budget + Move-in,\n"
         "but NOT your contact yet.\n"
-        "He must pay 200 Stars to see it.\n\n"
-        "Do you want Agent contact now?",
+        "They must pay 200 Stars to see it.\n\n"
+        "Do you want Owner contact now?",
         reply_markup=tenant_kb,
         parse_mode="Markdown")
     return ROLE
@@ -1262,8 +1236,6 @@ def main():
                 filters.TEXT & ~filters.COMMAND, a_desc)],
             A_NAME: [MessageHandler(
                 filters.TEXT & ~filters.COMMAND, a_name)],
-            A_VERIFY: [MessageHandler(
-                filters.CONTACT, a_verify)],
             A_CONTACT: [MessageHandler(
                 filters.CONTACT, a_contact)],
             A_BACKUP: [MessageHandler(
